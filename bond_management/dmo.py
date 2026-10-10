@@ -4,12 +4,12 @@ Needs curl_cffi: plain requests is served DMO's CAPTCHA page, an impersonated
 Chrome session is not. DMO publishes the day's COB data during the working day;
 before that the script falls back to the latest date that has data.
 
-Usage:
-    python dmo.py                 # today's COB, or the latest published one
-    python dmo.py --date 02/10/2026
-    python dmo.py --date 2026-10-02 --out screens
+Usage (from the repo root):
+    python bond_management/dmo.py            # today's COB, or the latest published one
+    python bond_management/dmo.py --date 02/10/2026
+    python bond_management/dmo.py --date 2026-10-02 --out screens
+    python bond_management/dmo.py --force    # ignore the cache, hit DMO again
 """
-
 
 import argparse
 import datetime as dt
@@ -19,9 +19,15 @@ import time
 from pathlib import Path
 from urllib.parse import quote
 
-import pandas as pd
 import xlrd
 from curl_cffi import requests as cr
+
+try:
+    from .bond import Bond
+    from .dates import excel_date, parse_date, parse_utc_datetime
+except ImportError:  # running this file directly from the package folder
+    from bond import Bond
+    from dates import excel_date, parse_date, parse_utc_datetime
 
 REPORT_CODE = "D1A"
 PAGE_URL = "https://www.dmo.gov.uk/data/pdfdatareport"
@@ -35,6 +41,7 @@ FAILED = b"Unable to fulfil the report request"
 
 OUT_DIR = Path("screens")
 RETRIES = 3
+MAX_AGE_DAYS = 31
 ISIN = re.compile(r"GB[0-9A-Z]{10}")
 
 
@@ -59,20 +66,20 @@ def open_report():
             m = re.search(r"var pdfreportdata = (\{.*?\n\});", r.text, re.DOTALL)
             if m:
                 return session, date_metadata(json.loads(m.group(1)))
-            raise RuntimeError("Could not find report metadata on the DMO page")
+            print("no report metadata on the DMO page, retrying")
         time.sleep(15 * attempt)
-    raise RuntimeError("DMO bot protection is blocking this network, wait a few minutes and run again")
-
-
-def parse_utc_datetime(value, fmt):
-    """Parse a datetime string and attach UTC so later date extraction is explicit."""
-    return dt.datetime.strptime(value, fmt).replace(tzinfo=dt.timezone.utc)
+    raise RuntimeError(
+        "DMO kept failing to serve the report page, wait a few minutes and run again"
+    )
 
 
 def date_metadata(report_data):
     """Min/max COB date allowed by the picker plus the latest COB that actually has data."""
     param = report_data["ReportParameters"][0]
-    limits = {i["key"]: parse_utc_datetime(i["value"], "%d/%m/%Y").date() for i in param["listItems"]}
+    limits = {
+        i["key"]: parse_utc_datetime(i["value"], "%d/%m/%Y").date()
+        for i in param["listItems"]
+    }
     return {
         "min": limits["Min"],
         "max": limits["Max"],
@@ -99,22 +106,30 @@ def download_xls(session, cob_date):
             time.sleep(3 * attempt)
         else:
             raise RuntimeError(f"Unexpected response ({r.status_code}): {body[:200]!r}")
-    raise RuntimeError(f"DMO export kept failing for {cob_date:%d/%m/%Y}, try again later")
-
-
-def parse_date(value):
-    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
-        try:
-            return dt.datetime.strptime(value, fmt).replace(tzinfo=dt.timezone.utc).date()
-        except ValueError:
-            continue
-    raise argparse.ArgumentTypeError(f"not a date: {value!r} (use dd/mm/yyyy or yyyy-mm-dd)")
+    raise RuntimeError(
+        f"DMO export kept failing for {cob_date:%d/%m/%Y}, try again later"
+    )
 
 
 def find_newest(out_dir=OUT_DIR):
     """The newest D1A workbook cached in out_dir (files are named by COB date), or None."""
     files = sorted(Path(out_dir).glob("gilts_in_issue_*.xls"))
     return files[-1] if files else None
+
+
+def cob_from_name(path):
+    """The COB date encoded in a cached workbook's filename, or None."""
+    m = re.fullmatch(r"gilts_in_issue_(\d{8})\.xls", Path(path).name)
+    return parse_utc_datetime(m.group(1), "%Y%m%d").date() if m else None
+
+
+def is_stale(path, max_age_days=MAX_AGE_DAYS):
+    """True when a cached workbook's COB date is older than max_age_days."""
+    cob = cob_from_name(path)
+    if cob is None:
+        return True
+    today = dt.datetime.now(tz=dt.UTC).date()
+    return (today - cob).days > max_age_days
 
 
 def find_existing(out_dir, cob_date=None):
@@ -127,38 +142,53 @@ def find_existing(out_dir, cob_date=None):
     newest = find_newest(out_dir)
     if newest is None:
         return None
-    today = dt.datetime.now(tz=dt.timezone.utc).date()
+    today = dt.datetime.now(tz=dt.UTC).date()
     # Reuse when it covers today, or was already fetched today (today's COB not published yet).
-    cob = parse_utc_datetime(newest.stem.removeprefix("gilts_in_issue_"), "%Y%m%d").date()
-    fetched_today = dt.datetime.fromtimestamp(newest.stat().st_mtime, tz=dt.timezone.utc).date()
+    cob = cob_from_name(newest)
+    if cob is None:
+        return None
+    fetched_today = dt.datetime.fromtimestamp(newest.stat().st_mtime, tz=dt.UTC).date()
     if cob == today or fetched_today == today:
         return newest
     return None
 
 
-def fetch(cob_date=None, out_dir=OUT_DIR):
-    cached = find_existing(out_dir, cob_date)
-    if cached:
-        print(f"{cached.name} already in {Path(out_dir)}, skipping DMO request")
-        return cached
+def fetch(cob_date=None, out_dir=OUT_DIR, force=False):
+    """Download the D1A workbook for cob_date (default: today or the latest published).
+
+    force=True skips the on-disk cache and always hits DMO.
+    """
+    if not force:
+        cached = find_existing(out_dir, cob_date)
+        if cached:
+            print(f"{cached.name} already in {Path(out_dir)}, skipping DMO request")
+            return cached
 
     session, meta = open_report()
 
     if cob_date is None:
-        cob_date = dt.datetime.now(tz=dt.timezone.utc).date()
+        cob_date = dt.datetime.now(tz=dt.UTC).date()
         if cob_date > meta["latest"]:
-            print(f"{cob_date:%d/%m/%Y} not published yet, falling back to {meta['latest']:%d/%m/%Y}")
+            print(
+                f"{cob_date:%d/%m/%Y} not published yet, falling back to {meta['latest']:%d/%m/%Y}"
+            )
             cob_date = meta["latest"]
     if not meta["min"] <= cob_date <= meta["max"]:
-        raise ValueError(f"date out of range, DMO only serves {meta['min']:%d/%m/%Y} to {meta['max']:%d/%m/%Y}")
+        raise ValueError(
+            f"date out of range, DMO only serves {meta['min']:%d/%m/%Y} to {meta['max']:%d/%m/%Y}"
+        )
 
     session, body = download_xls(session, cob_date)
     if body is None and cob_date != meta["latest"]:
-        print(f"No D1A data for {cob_date:%d/%m/%Y}, falling back to {meta['latest']:%d/%m/%Y}")
+        print(
+            f"No D1A data for {cob_date:%d/%m/%Y}, falling back to {meta['latest']:%d/%m/%Y}"
+        )
         cob_date = meta["latest"]
         session, body = download_xls(session, cob_date)
     if body is None:
-        raise RuntimeError(f"No gilts in issue data available (latest COB: {meta['latest']:%d/%m/%Y})")
+        raise RuntimeError(
+            f"No gilts in issue data available (latest COB: {meta['latest']:%d/%m/%Y})"
+        )
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -168,26 +198,25 @@ def fetch(cob_date=None, out_dir=OUT_DIR):
     return path
 
 
-def excel_date(value, datemode):
-    """An Excel serial date cell -> datetime.date (blank cells stay None)."""
-    if value in ("", None):
-        return None
-    return xlrd.xldate_as_datetime(value, datemode).date()
-
-
 def read(path):
-    """Parse a D1A workbook into a DataFrame of the gilts in issue.
+    """Parse a D1A workbook into a list of Bond objects.
 
-    Rows carry the conventional/index-linked split (market), the maturity bucket
-    (section: Ultra-Short/Short/Medium/Long) and the report's COB date, so the
-    inventory can be joined with a price feed on ISIN.
+    Bonds carry the conventional/index-linked split (market), the maturity
+    bucket (section: Ultra-Short/Short/Medium/Long) and the report's COB date,
+    so the inventory can be joined with a price feed on ISIN.
     """
     book = xlrd.open_workbook(path)
     sheet = book.sheet_by_index(0)
     m = re.search(r"GILTS IN ISSUE ON (\d{1,2} \w+ \d{4})", str(sheet.cell_value(0, 2)))
-    cob_date = dt.datetime.strptime(m.group(1).title(), "%d %B %Y").replace(tzinfo=dt.timezone.utc).date() if m else None
+    if not m:
+        raise RuntimeError(f"could not find the COB date header in {Path(path).name}")
+    cob_date = (
+        dt.datetime.strptime(m.group(1).title(), "%d %B %Y")
+        .replace(tzinfo=dt.UTC)
+        .date()
+    )
 
-    rows, market, section = [], None, None
+    bonds, market, section = [], None, None
     for r in range(sheet.nrows):
         cells = sheet.row_values(r) + [""] * (9 - sheet.ncols)
         name, code = str(cells[0]).strip(), str(cells[1]).strip()
@@ -195,29 +224,47 @@ def read(path):
             market = "index-linked" if "Index-linked" in name else "conventional"
             section = None
         elif ISIN.fullmatch(code):
-            rows.append({
-                "name": name,
-                "isin": code,
-                "market": market,
-                "section": section,
-                "redemption_date": excel_date(cells[2], book.datemode),
-                "first_issue_date": excel_date(cells[3], book.datemode),
-                "dividend_dates": cells[4],
-                "ex_dividend_date": excel_date(cells[5], book.datemode),
-                "amount_in_issue_m": cells[6],
-                "base_rpi": float(cells[7]) if market == "index-linked" and cells[7] else None,
-                "amount_incl_uplift_m": cells[8] if market == "index-linked" else None,
-                "cob_date": cob_date,
-            })
+            bonds.append(
+                Bond(
+                    name=name,
+                    isin=code,
+                    market=market,
+                    section=section,
+                    redemption_date=excel_date(cells[2], book.datemode),
+                    first_issue_date=excel_date(cells[3], book.datemode),
+                    dividend_dates=cells[4],
+                    ex_dividend_date=excel_date(cells[5], book.datemode),
+                    amount_in_issue_m=cells[6],
+                    base_rpi=float(cells[7])
+                    if market == "index-linked" and cells[7]
+                    else None,
+                    amount_incl_uplift_m=cells[8] if market == "index-linked" else None,
+                    cob_date=cob_date,
+                )
+            )
         elif market and not code:
             section = name
-    print(f"{Path(path).name}: {len(rows)} gilts in issue on {cob_date:%d/%m/%Y}")
-    return pd.DataFrame(rows)
+    print(f"{Path(path).name}: {len(bonds)} gilts in issue on {cob_date:%d/%m/%Y}")
+    return bonds
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Download the DMO gilts in issue (D1A) Excel export")
-    parser.add_argument("--date", type=parse_date, default=None, help="COB date, dd/mm/yyyy (default: today)")
-    parser.add_argument("--out", default=str(OUT_DIR), help="output directory (default: screens)")
+    parser = argparse.ArgumentParser(
+        description="Download the DMO gilts in issue (D1A) Excel export"
+    )
+    parser.add_argument(
+        "--date",
+        type=parse_date,
+        default=None,
+        help="COB date, dd/mm/yyyy (default: today)",
+    )
+    parser.add_argument(
+        "--out", default=str(OUT_DIR), help="output directory (default: screens)"
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="re-download even when a cached file exists",
+    )
     args = parser.parse_args()
-    fetch(args.date, args.out)
+    fetch(args.date, args.out, force=args.force)

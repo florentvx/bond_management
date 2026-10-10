@@ -1,0 +1,121 @@
+# AGENTS.md
+
+## Project goal
+
+Load UK **gilt** (government bond) market data, modelize the market from it, and use that
+to manage a gilt bond portfolio.
+
+Concretely, the project today covers the data layer: joining a live price feed with the
+official DMO inventory on ISIN, cached on disk. The modeling and portfolio-management
+layers (yield curve / duration-risk modeling, position tracking, P&L, trade decisions) are
+the intended direction, not yet implemented.
+
+## Layout
+
+Standard installable package layout (repo root ≠ package):
+
+- `pyproject.toml` — package metadata (`bond-management`), runtime dependencies,
+  setuptools package discovery, pytest `testpaths`. Install with `pip install -e .`
+  (already done in `.venv`; a fresh clone needs it once).
+- `bond_management/` — the importable package:
+  - `__init__.py` — entry point and data-loading orchestration. Public API
+    (`__all__`): `load_data(out_dir="screens") -> (prices_df, list[Bond])`,
+    `load_gilts_prices`, `scrape_gilts`, `cached_prices`, `feed_date`, `num`, `Bond`.
+  - `__main__.py` — `python -m bond_management` runs the loader and prints heads.
+  - `dmo.py` — UK DMO "Gilts in Issue" (report **D1A**) downloader + `.xls` parser.
+    `read()` returns `list[Bond]`; usable as a library (`fetch`, `download_xls`,
+    `read`, `find_newest`, ...) and as a CLI.
+  - `bond.py` — the `Bond` class: every D1A field per gilt (isin, market, section,
+    dates, amounts, base RPI, ...). `Bond.frame(bonds)` builds the inventory
+    DataFrame. Home for upcoming bond methods.
+  - `dates.py` — all date logic: `CLOSE`, `easter`, `bank_holidays`, `feed_date`,
+    `as_naive`, `parse_date`, `parse_utc_datetime`, `excel_date`.
+- `screens/` — **gitignored** local data cache: `gilts_YYYYMMDD.csv` (price snapshots),
+  `gilts_in_issue_YYYYMMDD.xls` (inventory). A fresh clone starts empty and downloads on
+  first run. Do not delete casually; `load_data()` makes live network calls and writes here
+  (path is relative to the current working directory — run from the repo root).
+- `tests/` — offline pytest suite (network monkeypatched, temp dirs for caches). Run with
+  `.venv/Scripts/python -m pytest -q` from the repo root.
+- `.venv/` — Python 3.12 virtualenv (gitignored).
+
+There is no `README`, no CI. Lint: `ruff` (installed in `.venv`, default rules — no
+config file); `ruff format` would rewrap most files, but is not enforced.
+
+## Data sources
+
+1. **giltsyield.com** (`https://giltsyield.com/bond/`) — scraped HTML table of
+   conventional gilt prices: clean/dirty price, accrued interest, modified duration,
+   gross yield, DMO yield, coupon, maturity, TIDM, ISIN, and a "Market data as of"
+   timestamp (treated as UTC). Feed carries conventional gilts only (71 rows currently).
+2. **DMO** (`dmo.gov.uk`, report `D1A`) — official inventory, all gilts in issue
+   (conventional + index-linked, ~105): amount in issue, redemption/ex-dividend dates,
+   base RPI, maturity buckets (Ultra-Short / Short / Medium / Long), indexation lag.
+   Downloaded as legacy OLE2 `.xls`.
+
+The join key between the two is **ISIN** (`GB[0-9A-Z]{10}`); TIDM is kept alongside for
+the price feed.
+
+## Running
+
+```bash
+# activate venv (Windows)
+.venv/Scripts/activate
+
+# once after a fresh clone (editable install makes `import bond_management` resolve)
+pip install -e .
+
+# load both sources (cached; refreshes stale data) and print heads
+python -m bond_management
+
+# DMO inventory only (today's COB, or latest published)
+python bond_management/dmo.py
+python bond_management/dmo.py --date 02/10/2026 --out screens
+python bond_management/dmo.py --force   # ignore the cache, hit DMO again
+
+# tests (offline)
+python -m pytest -q
+
+# lint
+python -m ruff check .
+```
+
+Debug via VS Code "Python Debugger: Current File" (`.vscode/launch.json`).
+
+## Conventions
+
+- **Cache freshness:** price CSVs are reused only once their `as_of` reaches that day's
+  **17:00 UTC close** (`CLOSE`); weekends *and England & Wales bank holidays* (computed
+  in `bank_holidays()`, one-off extras excluded) fall back via `feed_date`. The newest
+  `gilts_in_issue_*.xls` by filename is reused, re-downloaded when older than
+  `dmo.MAX_AGE_DAYS` (31) or when a priced ISIN is missing; `force=True` / `--force`
+  skips both caches.
+- **Bot protection:** DMO requires `curl_cffi` Chrome impersonation — plain `requests`
+  gets a ShieldSquare CAPTCHA. Retries with linear backoff (`15 * attempt` s) on 403/429
+  or captcha pages; fresh session per retry.
+- **Errors:** expected conditions (COB not yet published, weekend, missing ISIN) print a
+  message and degrade gracefully; `RuntimeError` / `ValueError` only for real failures
+  (blocked network, date out of DMO's range).
+- **Style:** module docstring = user documentation; `UPPER_CASE` module constants;
+  small helper functions with one-line docstrings; `print()` for user-facing messages
+  (no logging); plain stdlib + pandas, no type hints, no dataclasses/config files.
+- Import works both as package (`import bond_management` — resolved by the editable
+  install or the workspace root) and as a script (`python bond_management/dmo.py`) —
+  the relative `dmo`/`bond`/`dates` imports have try/except fallbacks.
+
+## Dependencies (declared in `pyproject.toml`)
+
+Runtime: `pandas`, `requests`, `beautifulsoup4`, `curl_cffi` (required for DMO),
+`xlrd` (for legacy `.xls`). Optional extras: `test` = `pytest`, `lint` = `ruff`.
+
+Installed in `.venv` but not declared — likely intended for the modeling/portfolio
+layer: `yfinance`, `peewee` (SQLite ORM), `websockets`, `numpy`.
+
+## Gotchas
+
+- `screens/` is gitignored — only `.gitignore`, `AGENTS.md`, `pyproject.toml`,
+  `bond_management/` and `tests/` are tracked.
+- Running `load_data()` hits the network and writes to `screens/`.
+- Date-stamped filenames are the cache keys; freshness rules are filename- and
+  clock-based, not content-based.
+- Index-linked gilts exist in the DMO inventory but not in the price feed — expect
+  unmatched ISINs on that side of the join.
