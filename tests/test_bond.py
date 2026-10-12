@@ -10,6 +10,7 @@ class TestBond:
             isin="GB00B3KJDS62",
             name="Treasury 4.25% 2036",
             market="index-linked",
+            indexation_lag=3,
             section="Long",
             amount_in_issue_m=12345.0,
             base_rpi=92.6,
@@ -18,6 +19,7 @@ class TestBond:
         assert b.isin == "GB00B3KJDS62"
         assert b.name == "Treasury 4.25% 2036"
         assert b.market == "index-linked"
+        assert b.indexation_lag == 3
         assert b.section == "Long"
         assert b.amount_in_issue_m == 12345.0
         assert b.base_rpi == 92.6

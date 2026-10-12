@@ -10,6 +10,25 @@ official DMO inventory on ISIN, cached on disk. The modeling and portfolio-manag
 layers (yield curve / duration-risk modeling, position tracking, P&L, trade decisions) are
 the intended direction, not yet implemented.
 
+## Remediation plan (completed)
+
+Every item of the former `FULL_REVIEW.md` has been fixed per the plan
+`sniffy-honking-squid.md` (opencode plans dir: `~/.local/share/opencode/plans/`),
+each with a regression test, and `FULL_REVIEW.md` has been deleted.
+Both gates are green: `.venv/Scripts/python -m pytest -q` + `ruff check .`.
+
+- [x] 1. `indexation_lag` field on `Bond` (3/8-month groups no longer conflated)
+- [x] 2. Cache validation: refuse to cache empty/partial/corrupt scrapes, return last good file
+- [x] 3. Import fallback: `if __package__` instead of `try/except ImportError` (no masked errors)
+- [x] 4. Accurate post-fetch "close" message + no sleep before the final retry raise
+- [x] 5. `num()` handles vulgar fractions (`4¼`, `1 1/8%`)
+- [x] 6. Footer/blank D1A rows no longer corrupt `section`
+- [x] 7. Graceful degradation when a DMO inventory refresh fails (use cached workbook)
+- [x] 8. Remove dead `[tool.hatch]` config from `pyproject.toml`
+- [x] 9. Remaining test gaps (`raise_for_status`, unresolvable ISINs)
+- [x] 10. AGENTS.md accuracy pass (API name, dependency roles, cache-validation note)
+- [x] 11. Delete `FULL_REVIEW.md` once everything is green
+
 ## Layout
 
 Standard installable package layout (repo root ≠ package):
@@ -20,14 +39,14 @@ Standard installable package layout (repo root ≠ package):
 - `bond_management/` — the importable package:
   - `__init__.py` — entry point and data-loading orchestration. Public API
     (`__all__`): `load_data(out_dir="screens") -> (prices_df, list[Bond])`,
-    `load_gilts_prices`, `scrape_gilts`, `cached_prices`, `feed_date`, `num`, `Bond`.
+    `load_gilt_prices`, `scrape_gilts`, `cached_prices`, `feed_date`, `num`, `Bond`.
   - `__main__.py` — `python -m bond_management` runs the loader and prints heads.
   - `dmo.py` — UK DMO "Gilts in Issue" (report **D1A**) downloader + `.xls` parser.
     `read()` returns `list[Bond]`; usable as a library (`fetch`, `download_xls`,
     `read`, `find_newest`, ...) and as a CLI.
-  - `bond.py` — the `Bond` class: every D1A field per gilt (isin, market, section,
-    dates, amounts, base RPI, ...). `Bond.frame(bonds)` builds the inventory
-    DataFrame. Home for upcoming bond methods.
+  - `bond.py` — the `Bond` class: every D1A field per gilt (isin, market,
+    indexation_lag, section, dates, amounts, base RPI, ...). `Bond.frame(bonds)`
+    builds the inventory DataFrame. Home for upcoming bond methods.
   - `dates.py` — all date logic: `CLOSE`, `easter`, `bank_holidays`, `feed_date`,
     `as_naive`, `parse_date`, `parse_utc_datetime`, `excel_date`.
 - `screens/` — **gitignored** local data cache: `gilts_YYYYMMDD.csv` (price snapshots),
@@ -85,27 +104,31 @@ Debug via VS Code "Python Debugger: Current File" (`.vscode/launch.json`).
 
 - **Cache freshness:** price CSVs are reused only once their `as_of` reaches that day's
   **17:00 UTC close** (`CLOSE`); weekends *and England & Wales bank holidays* (computed
-  in `bank_holidays()`, one-off extras excluded) fall back via `feed_date`. The newest
-  `gilts_in_issue_*.xls` by filename is reused, re-downloaded when older than
-  `dmo.MAX_AGE_DAYS` (31) or when a priced ISIN is missing; `force=True` / `--force`
-  skips both caches.
+  in `bank_holidays()`, one-off extras excluded) fall back via `feed_date`. Empty, partial
+  or corrupt scrapes are never cached — the newest good `gilts_*.csv` is kept and returned
+  instead. The newest `gilts_in_issue_*.xls` by filename is reused, re-downloaded when
+  older than `dmo.MAX_AGE_DAYS` (31) or when a priced ISIN is missing; `force=True` /
+  `--force` skips both caches.
 - **Bot protection:** DMO requires `curl_cffi` Chrome impersonation — plain `requests`
   gets a ShieldSquare CAPTCHA. Retries with linear backoff (`15 * attempt` s) on 403/429
   or captcha pages; fresh session per retry.
 - **Errors:** expected conditions (COB not yet published, weekend, missing ISIN) print a
-  message and degrade gracefully; `RuntimeError` / `ValueError` only for real failures
-  (blocked network, date out of DMO's range).
+  message and degrade gracefully — a failed DMO refresh falls back to the newest cached
+  workbook; `RuntimeError` / `ValueError` only for real failures (blocked network, date
+  out of DMO's range).
 - **Style:** module docstring = user documentation; `UPPER_CASE` module constants;
   small helper functions with one-line docstrings; `print()` for user-facing messages
   (no logging); plain stdlib + pandas, no type hints, no dataclasses/config files.
 - Import works both as package (`import bond_management` — resolved by the editable
   install or the workspace root) and as a script (`python bond_management/dmo.py`) —
-  the relative `dmo`/`bond`/`dates` imports have try/except fallbacks.
+  the relative `dmo`/`bond`/`dates` imports are gated on `__package__`, so a missing
+  third-party dependency surfaces with its own ImportError instead of a masked one.
 
 ## Dependencies (declared in `pyproject.toml`)
 
-Runtime: `pandas`, `requests`, `beautifulsoup4`, `curl_cffi` (required for DMO),
-`xlrd` (for legacy `.xls`). Optional extras: `test` = `pytest`, `lint` = `ruff`.
+Runtime: `pandas`, `requests` (price feed only), `beautifulsoup4` (price feed only),
+`curl_cffi` (DMO only — required for the package to import at all), `xlrd` (DMO only,
+legacy `.xls`). Optional extras: `test` = `pytest`, `lint` = `ruff`.
 
 Installed in `.venv` but not declared — likely intended for the modeling/portfolio
 layer: `yfinance`, `peewee` (SQLite ORM), `websockets`, `numpy`.

@@ -6,6 +6,7 @@ COLUMNS = [
     "name",
     "isin",
     "market",
+    "indexation_lag",
     "section",
     "redemption_date",
     "first_issue_date",
@@ -21,9 +22,11 @@ COLUMNS = [
 class Bond:
     """One gilt in issue, with every field the D1A report provides.
 
-    market is "conventional" or "index-linked", section the maturity bucket
-    (Ultra-Short/Short/Medium/Long) and cob_date the report's close-of-business
-    date, so bonds can be joined with a price feed on isin.
+    market is "conventional" or "index-linked", indexation_lag the months of
+    lag (3 or 8) for index-linked gilts and None for conventional ones, section
+    the maturity bucket (Ultra-Short/Short/Medium/Long) and cob_date the
+    report's close-of-business date, so bonds can be joined with a price feed
+    on isin.
     """
 
     def __init__(
@@ -31,6 +34,7 @@ class Bond:
         name,
         isin,
         market,
+        indexation_lag,
         section,
         redemption_date,
         first_issue_date,
@@ -44,6 +48,7 @@ class Bond:
         self.name = name
         self.isin = isin
         self.market = market
+        self.indexation_lag = indexation_lag
         self.section = section
         self.redemption_date = redemption_date
         self.first_issue_date = first_issue_date

@@ -22,10 +22,10 @@ from urllib.parse import quote
 import xlrd
 from curl_cffi import requests as cr
 
-try:
+if __package__:  # imported as part of the package
     from .bond import Bond
     from .dates import excel_date, parse_date, parse_utc_datetime
-except ImportError:  # running this file directly from the package folder
+else:  # running this file directly from the package folder
     from bond import Bond
     from dates import excel_date, parse_date, parse_utc_datetime
 
@@ -42,7 +42,9 @@ FAILED = b"Unable to fulfil the report request"
 OUT_DIR = Path("screens")
 RETRIES = 3
 MAX_AGE_DAYS = 31
+FETCH_ERRORS = (RuntimeError, ValueError, cr.exceptions.RequestException)
 ISIN = re.compile(r"GB[0-9A-Z]{10}")
+SECTIONS = {"Ultra-Short", "Short", "Medium", "Long"}
 
 
 def new_session():
@@ -67,7 +69,8 @@ def open_report():
             if m:
                 return session, date_metadata(json.loads(m.group(1)))
             print("no report metadata on the DMO page, retrying")
-        time.sleep(15 * attempt)
+        if attempt < RETRIES:
+            time.sleep(15 * attempt)
     raise RuntimeError(
         "DMO kept failing to serve the report page, wait a few minutes and run again"
     )
@@ -100,10 +103,12 @@ def download_xls(session, cob_date):
         if body.startswith(OLE2_MAGIC):
             return session, (None if NO_DATA in body else body)
         if blocked(r):
-            time.sleep(15 * attempt)
-            session = new_session()
+            if attempt < RETRIES:
+                time.sleep(15 * attempt)
+                session = new_session()
         elif FAILED in body:
-            time.sleep(3 * attempt)
+            if attempt < RETRIES:
+                time.sleep(3 * attempt)
         else:
             raise RuntimeError(f"Unexpected response ({r.status_code}): {body[:200]!r}")
     raise RuntimeError(
@@ -201,9 +206,11 @@ def fetch(cob_date=None, out_dir=OUT_DIR, force=False):
 def read(path):
     """Parse a D1A workbook into a list of Bond objects.
 
-    Bonds carry the conventional/index-linked split (market), the maturity
-    bucket (section: Ultra-Short/Short/Medium/Long) and the report's COB date,
-    so the inventory can be joined with a price feed on ISIN.
+    Bonds carry the conventional/index-linked split (market), the indexation
+    lag of the index-linked groups (indexation_lag: 3 or 8 months, None for
+    conventional), the maturity bucket (section: Ultra-Short/Short/Medium/Long)
+    and the report's COB date, so the inventory can be joined with a price feed
+    on ISIN.
     """
     book = xlrd.open_workbook(path)
     sheet = book.sheet_by_index(0)
@@ -216,19 +223,22 @@ def read(path):
         .date()
     )
 
-    bonds, market, section = [], None, None
+    bonds, market, section, lag = [], None, None, None
     for r in range(sheet.nrows):
         cells = sheet.row_values(r) + [""] * (9 - sheet.ncols)
         name, code = str(cells[0]).strip(), str(cells[1]).strip()
         if code == "ISIN Code":
             market = "index-linked" if "Index-linked" in name else "conventional"
             section = None
+            m = re.search(r"(\d+)[-\s]?month", name, re.IGNORECASE)
+            lag = int(m.group(1)) if m else None
         elif ISIN.fullmatch(code):
             bonds.append(
                 Bond(
                     name=name,
                     isin=code,
                     market=market,
+                    indexation_lag=lag,
                     section=section,
                     redemption_date=excel_date(cells[2], book.datemode),
                     first_issue_date=excel_date(cells[3], book.datemode),
@@ -242,7 +252,7 @@ def read(path):
                     cob_date=cob_date,
                 )
             )
-        elif market and not code:
+        elif market and not code and name in SECTIONS:
             section = name
     print(f"{Path(path).name}: {len(bonds)} gilts in issue on {cob_date:%d/%m/%Y}")
     return bonds

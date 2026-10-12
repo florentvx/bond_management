@@ -24,12 +24,3 @@ packages = ["bond_management"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
-[tool.hatch.envs.default]
-features = ["test", "lint"]
-
-[tool.hatch.envs.default.scripts]
-lint = "ruff check {args:} ."
-format = "ruff format {args:} ."
-test = "pytest {args:}"
-check = ["lint", "test"]

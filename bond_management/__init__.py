@@ -18,11 +18,11 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-try:
+if __package__:  # imported as part of the package
     from . import dmo
     from .bond import Bond
     from .dates import CLOSE, as_naive, feed_date
-except ImportError:  # running this file directly from the package folder
+else:  # running this file directly from the package folder
     import dmo
     from bond import Bond
     from dates import CLOSE, as_naive, feed_date
@@ -64,11 +64,37 @@ PRICE_COLUMNS = [
     "Gross yield",
     "DMO yield",
 ]
+VULGAR = str.maketrans(
+    {
+        "¼": " 1/4",
+        "½": " 1/2",
+        "¾": " 3/4",
+        "⅓": " 1/3",
+        "⅔": " 2/3",
+        "⅛": " 1/8",
+        "⅜": " 3/8",
+        "⅝": " 5/8",
+        "⅞": " 7/8",
+    }
+)
 
 
 def num(s):
-    """'£99.85 ▲0.03%' -> 99.85 ; '3.659% ▼6.7bps' -> 3.659"""
-    m = re.search(r"-?[\d,]*\.?\d+", s.replace("£", ""))
+    """'£99.85 ▲0.03%' -> 99.85 ; '4¼%' -> 4.25 ; '3.659% ▼6.7bps' -> 3.659"""
+    s = s.replace("£", "").translate(VULGAR)
+    m = re.search(r"(-?\d+)\s+(\d+)/(\d+)", s)
+    if m:
+        whole, frac = int(m.group(1)), int(m.group(2)) / int(m.group(3))
+        return -(abs(whole) + frac) if whole < 0 else whole + frac
+    m = re.fullmatch(r"\s*(-?)(\d+)/(\d+)\s*%?", s)
+    if m:
+        frac = int(m.group(2)) / int(m.group(3))
+        return -frac if m.group(1) else frac
+    m = re.search(r"(-?)(\d+)/(\d+)(?=%)", s)
+    if m:
+        frac = int(m.group(2)) / int(m.group(3))
+        return -frac if m.group(1) else frac
+    m = re.search(r"-?[\d,]*\.?\d+", s)
     return float(m.group().replace(",", "")) if m else None
 
 
@@ -136,7 +162,14 @@ def cached_prices(path, cutoff):
     """The cached price file when it already holds the cutoff close, else None."""
     if not path.exists():
         return None
-    df = pd.read_csv(path)
+    try:
+        df = pd.read_csv(path)
+    except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError):
+        print(f"{path.name} is unreadable, refetching")
+        return None
+    if "as_of" not in df.columns:
+        print(f"{path.name} has no data timestamp, refetching")
+        return None
     as_of = pd.to_datetime(df["as_of"], errors="coerce").max()
     if pd.isna(as_of):
         print(f"{path.name} has no data timestamp, refetching")
@@ -152,12 +185,39 @@ def cached_prices(path, cutoff):
     return df
 
 
+def newest_cache(out_dir):
+    """Newest gilts_*.csv in out_dir (filenames sort by date), or None."""
+    files = sorted(Path(out_dir).glob("gilts_*.csv"))
+    return files[-1] if files else None
+
+
+def scrape_problems(df, previous_rows):
+    """Reasons a scraped price table must not be written to the cache."""
+    if not len(df):
+        return ["no rows"]
+    problems = []
+    if "as_of" not in df.columns or df["as_of"].isna().all():
+        problems.append("no data timestamp")
+    nulls = [
+        c
+        for c in ("isin", "clean_price", "matures")
+        if c in df.columns and df[c].isna().any()
+    ]
+    if nulls:
+        problems.append(f"null values in {', '.join(nulls)}")
+    if previous_rows is not None and len(df) < previous_rows:
+        problems.append(f"only {len(df)} of {previous_rows} rows")
+    return problems
+
+
 def load_gilt_prices(out_dir=OUT_DIR, force=False):
     """Gilt prices for the latest trading day.
 
     Weekend and bank-holiday runs point at the previous trading day's file, and
     a cached file is only reused once its feed timestamp reaches that day's
     17:00 close; otherwise the feed is refetched and saved under the same name.
+    An empty, partial or corrupt scrape is never written: the newest cached
+    file is kept and returned instead.
     force=True skips the cache and refetches the feed.
     """
     out_dir = Path(out_dir)
@@ -171,6 +231,19 @@ def load_gilt_prices(out_dir=OUT_DIR, force=False):
 
     df = scrape_gilts()
     out_dir.mkdir(parents=True, exist_ok=True)
+    old, old_df = newest_cache(out_dir), None
+    if old is not None:
+        try:
+            old_df = pd.read_csv(old)
+        except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError):
+            old_df = None
+    problems = scrape_problems(df, len(old_df) if old_df is not None else None)
+    if problems:
+        print(f"{path.name} <- refusing to cache: {'; '.join(problems)}")
+        if old_df is not None:
+            print(f"keeping {old.name}")
+            return old_df
+        return df
     df.to_csv(path, index=False)
     as_of = (
         as_naive(df["as_of"].iloc[0])
@@ -181,7 +254,8 @@ def load_gilt_prices(out_dir=OUT_DIR, force=False):
         print(f"{path.name} <- {len(df)} gilts, no feed timestamp")
     elif as_of < cutoff:
         print(
-            f"{path.name} <- {len(df)} gilts, feed only shows {as_of:%H:%M} (close is 17:00)"
+            f"{path.name} <- {len(df)} gilts, "
+            f"feed only shows {as_of:%d/%m/%Y %H:%M}, close is {CLOSE:%H:%M}"
         )
     else:
         print(f"{path.name} <- {len(df)} gilts, {as_of:%d/%m/%Y %H:%M} close")
@@ -194,30 +268,50 @@ def load_data(out_dir=OUT_DIR, force=False):
     Returns (prices, bonds): the price DataFrame and the inventory as Bond
     objects. The inventory is the newest D1A workbook on disk, downloaded when
     there is none or when it is over dmo.MAX_AGE_DAYS old, and refreshed when
-    a priced gilt is missing from it. force=True skips both caches and hits
-    the network again.
+    a priced gilt is missing from it; a failed refresh falls back to the
+    cached workbook (re-raising only when there is none). force=True skips
+    both caches and hits the network again.
     """
     prices = load_gilt_prices(out_dir, force=force)
-    path = dmo.find_newest(out_dir)
+    cached = dmo.find_newest(out_dir)
+    path = cached
     if path is not None and not force and dmo.is_stale(path):
         print(
             f"{path.name} is over {dmo.MAX_AGE_DAYS} days old, fetching the latest DMO inventory"
         )
         path = None
     if path is None or force:
-        path = dmo.fetch(out_dir=out_dir, force=force)
+        try:
+            path = dmo.fetch(out_dir=out_dir, force=force)
+        except dmo.FETCH_ERRORS as e:
+            if cached is None:
+                raise
+            print(f"could not refresh the DMO inventory: {e}; using {cached.name}")
+            path = cached
     bonds = dmo.read(path)
 
     if len(prices):
-        missing = sorted(set(prices["isin"].dropna()) - {b.isin for b in bonds})
+        priced = set(prices["isin"].dropna())
+        missing = sorted(priced - {b.isin for b in bonds})
         if missing:
             print(
                 f"{', '.join(missing)} not in {path.name}, fetching the latest DMO inventory"
             )
-            fresh = dmo.fetch(out_dir=out_dir, force=True)
-            if fresh != path:
-                path, bonds = fresh, dmo.read(fresh)
-                missing = sorted(set(prices["isin"].dropna()) - {b.isin for b in bonds})
-            if missing:
-                print(f"still missing from the DMO inventory: {', '.join(missing)}")
+            try:
+                fresh = dmo.fetch(out_dir=out_dir, force=True)
+            except dmo.FETCH_ERRORS as e:
+                print(f"could not refresh the DMO inventory: {e}; using {path.name}")
+            else:
+                if fresh != path:
+                    path, bonds = fresh, dmo.read(fresh)
+                    missing = sorted(priced - {b.isin for b in bonds})
+                if missing:
+                    print(f"still missing from the DMO inventory: {', '.join(missing)}")
+        gone = sorted(
+            b.isin
+            for b in bonds
+            if b.market == "conventional" and b.isin not in priced
+        )
+        if gone:
+            print(f"feed may be missing {len(gone)} gilts: {', '.join(gone)}")
     return prices, bonds

@@ -26,6 +26,7 @@ def make_bond(isin="GB00B3KJDS62", **overrides):
         "name": "Test Gilt",
         "isin": isin,
         "market": "conventional",
+        "indexation_lag": None,
         "section": "Long",
         "redemption_date": None,
         "first_issue_date": None,

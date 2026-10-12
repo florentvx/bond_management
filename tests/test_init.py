@@ -48,10 +48,28 @@ class TestNum:
     def test_no_number(self):
         assert bm.num("N/A") is None
 
+    def test_mixed_fraction(self):
+        assert bm.num("1 1/8%") == 1.125
 
-def write_cache(tmp_path, as_of, day="20261009"):
+    def test_vulgar_fraction_with_percent(self):
+        assert bm.num("4¼%") == 4.25
+
+    def test_negative_vulgar_fraction(self):
+        assert bm.num("-1½%") == -1.5
+
+    def test_bare_vulgar_fraction(self):
+        assert bm.num("¼") == 0.25
+
+    def test_dividend_dates_are_not_fractions(self):
+        assert bm.num("12/06, 12/12") == 12.0
+
+
+def write_cache(tmp_path, as_of, day="20261009", rows=1):
     df = pd.DataFrame(
-        [{c: 1.0 for c in bm.COLUMNS} | {"isin": "GB00B3KJDS62", "as_of": as_of}]
+        [
+            {c: 1.0 for c in bm.COLUMNS} | {"isin": "GB00B3KJDS62", "as_of": as_of}
+        ]
+        * rows
     )
     path = tmp_path / f"gilts_{day}.csv"
     df.to_csv(path, index=False)
@@ -75,6 +93,16 @@ class TestCachedPrices:
 
     def test_missing_file(self, tmp_path):
         assert bm.cached_prices(tmp_path / "gilts_20261009.csv", self.CUTOFF) is None
+
+    def test_zero_byte_file(self, tmp_path):
+        path = tmp_path / "gilts_20261009.csv"
+        path.write_bytes(b"")
+        assert bm.cached_prices(path, self.CUTOFF) is None
+
+    def test_missing_as_of_column(self, tmp_path):
+        path = tmp_path / "gilts_20261009.csv"
+        pd.DataFrame({"isin": ["GB00B3KJDS62"]}).to_csv(path, index=False)
+        assert bm.cached_prices(path, self.CUTOFF) is None
 
 
 class TestScrapeGilts:
@@ -116,17 +144,27 @@ class TestScrapeGilts:
         assert len(df) == 0
         assert list(df.columns) == bm.COLUMNS + ["as_of"]
 
+    def test_http_error_is_raised(self, monkeypatch):
+        patch_scrape(monkeypatch, make_page(ROW_HTML), status=500)
+        with pytest.raises(RuntimeError, match="HTTP 500"):
+            bm.scrape_gilts()
+
 
 class TestLoadGiltPrices:
     def setup_method(self):
         self.day = dt.date(2026, 10, 9)
 
-    def patch(self, monkeypatch, scrape_calls):
+    def patch(self, monkeypatch, scrape_calls, rows=1, drop=()):
         monkeypatch.setattr(bm, "feed_date", lambda day=None: self.day)
 
         def fake_scrape():
             scrape_calls.append(1)
-            df = pd.DataFrame([{c: 1.0 for c in bm.COLUMNS}])
+            df = pd.DataFrame(
+                [{c: 1.0 for c in bm.COLUMNS} for _ in range(rows)],
+                columns=bm.COLUMNS,
+            )
+            for col in drop:
+                df[col] = None
             df["as_of"] = dt.datetime(2026, 10, 9, 17, 0, tzinfo=dt.UTC)
             return df
 
@@ -147,13 +185,72 @@ class TestLoadGiltPrices:
         bm.load_gilt_prices(tmp_path, force=True)
         assert calls == [1]
 
+    def test_partial_scrape_keeps_previous_file(self, tmp_path, monkeypatch, capsys):
+        write_cache(tmp_path, "2026-10-08 17:00:00+00:00", day="20261008", rows=10)
+        calls = []
+        self.patch(monkeypatch, calls, rows=1)
+        df = bm.load_gilt_prices(tmp_path)
+        assert calls == [1]
+        assert len(df) == 10
+        assert not (tmp_path / "gilts_20261009.csv").exists()
+        out = capsys.readouterr().out
+        assert "gilts_20261009.csv <- refusing to cache: only 1 of 10 rows" in out
+        assert "keeping gilts_20261008.csv" in out
+
+    def test_partial_scrape_forced_still_refused(self, tmp_path, monkeypatch):
+        write_cache(tmp_path, "2026-10-09 17:00:00+00:00", day="20261009", rows=10)
+        calls = []
+        self.patch(monkeypatch, calls, rows=1)
+        df = bm.load_gilt_prices(tmp_path, force=True)
+        assert calls == [1]
+        assert len(df) == 10
+        assert len(pd.read_csv(tmp_path / "gilts_20261009.csv")) == 10
+
+    def test_empty_scrape_keeps_previous_file(self, tmp_path, monkeypatch):
+        write_cache(tmp_path, "2026-10-08 17:00:00+00:00", day="20261008", rows=10)
+        calls = []
+        self.patch(monkeypatch, calls, rows=0)
+        df = bm.load_gilt_prices(tmp_path)
+        assert len(df) == 10
+        assert not (tmp_path / "gilts_20261009.csv").exists()
+
+    def test_empty_scrape_without_previous_writes_nothing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        calls = []
+        self.patch(monkeypatch, calls, rows=0)
+        df = bm.load_gilt_prices(tmp_path)
+        assert len(df) == 0
+        assert not (tmp_path / "gilts_20261009.csv").exists()
+        assert "refusing to cache: no rows" in capsys.readouterr().out
+
+    def test_null_isin_scrape_refused(self, tmp_path, monkeypatch, capsys):
+        write_cache(tmp_path, "2026-10-08 17:00:00+00:00", day="20261008", rows=10)
+        calls = []
+        self.patch(monkeypatch, calls, drop=("isin",))
+        df = bm.load_gilt_prices(tmp_path)
+        assert len(df) == 10
+        assert not (tmp_path / "gilts_20261009.csv").exists()
+        assert "null values in isin" in capsys.readouterr().out
+
+    def test_stale_message_shows_the_full_feed_timestamp(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self.day = dt.date(2026, 10, 10)
+        calls = []
+        self.patch(monkeypatch, calls)
+        bm.load_gilt_prices(tmp_path)
+        assert calls == [1]
+        out = capsys.readouterr().out
+        assert "feed only shows 09/10/2026 17:00, close is 17:00" in out
+
 
 PRICES = pd.DataFrame([{"isin": "GB00B3KJDS62"}])
 BONDS = [make_bond("GB00B3KJDS62")]
 
 
 class TestLoadData:
-    def patch(self, monkeypatch, tmp_path, fetched, stale=False, prices=None):
+    def patch(self, monkeypatch, tmp_path, fetched, stale=False, prices=None, bonds=None):
         path = tmp_path / "gilts_in_issue_20261008.xls"
         path.write_bytes(b"x")
         monkeypatch.setattr(
@@ -169,7 +266,7 @@ class TestLoadData:
             return path
 
         monkeypatch.setattr(bm.dmo, "fetch", fake_fetch)
-        monkeypatch.setattr(bm.dmo, "read", lambda p: BONDS)
+        monkeypatch.setattr(bm.dmo, "read", lambda p: BONDS if bonds is None else bonds)
         return path
 
     def test_fresh_inventory_never_downloads(self, tmp_path, monkeypatch):
@@ -223,3 +320,76 @@ class TestLoadData:
         assert fetched == [True]
         assert reads == ["gilts_in_issue_20261008.xls", "gilts_in_issue_20261009.xls"]
         assert [b.isin for b in bonds] == ["GB00B3KJDS62"]
+
+    def test_warns_when_feed_is_missing_gilts(self, tmp_path, monkeypatch, capsys):
+        fetched = []
+        bonds = [
+            make_bond("GB00B3KJDS62"),
+            make_bond("GBGONE00001"),
+            make_bond("GBLINKER0001", market="index-linked"),
+        ]
+        self.patch(monkeypatch, tmp_path, fetched, bonds=bonds)
+        bm.load_data(tmp_path)
+        assert fetched == []
+        assert "feed may be missing 1 gilts: GBGONE00001" in capsys.readouterr().out
+
+    @staticmethod
+    def boom(cob_date=None, out_dir=None, force=False):
+        raise RuntimeError("DMO down")
+
+    def test_fetch_that_resolves_nothing_still_returns(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        fetched = []
+        self.patch(monkeypatch, tmp_path, fetched)
+        monkeypatch.setattr(bm.dmo, "read", lambda p: [make_bond("GBOTHER0000")])
+        _prices, bonds = bm.load_data(tmp_path)
+        assert fetched == [True]
+        assert [b.isin for b in bonds] == ["GBOTHER0000"]
+        assert (
+            "still missing from the DMO inventory: GB00B3KJDS62"
+            in capsys.readouterr().out
+        )
+
+    def test_stale_refresh_failure_falls_back_to_cached_workbook(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        fetched = []
+        self.patch(monkeypatch, tmp_path, fetched, stale=True)
+        monkeypatch.setattr(bm.dmo, "fetch", self.boom)
+        prices, bonds = bm.load_data(tmp_path)
+        assert prices is PRICES
+        assert bonds is BONDS
+        assert (
+            "could not refresh the DMO inventory: DMO down; "
+            "using gilts_in_issue_20261008.xls" in capsys.readouterr().out
+        )
+
+    def test_fetch_failure_without_cache_propagates(self, tmp_path, monkeypatch):
+        fetched = []
+        self.patch(monkeypatch, tmp_path, fetched)
+        monkeypatch.setattr(bm.dmo, "find_newest", lambda out_dir: None)
+        monkeypatch.setattr(bm.dmo, "fetch", self.boom)
+        with pytest.raises(RuntimeError, match="DMO down"):
+            bm.load_data(tmp_path)
+
+    def test_missing_isin_refresh_failure_keeps_current_bonds(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        fetched = []
+        self.patch(monkeypatch, tmp_path, fetched)
+        old = [make_bond("GBOTHER0000")]
+        monkeypatch.setattr(bm.dmo, "read", lambda p: old)
+
+        def boom(cob_date=None, out_dir=None, force=False):
+            fetched.append(force)
+            raise RuntimeError("DMO down")
+
+        monkeypatch.setattr(bm.dmo, "fetch", boom)
+        _prices, bonds = bm.load_data(tmp_path)
+        assert bonds is old
+        assert fetched == [True]
+        assert (
+            "could not refresh the DMO inventory: DMO down; "
+            "using gilts_in_issue_20261008.xls" in capsys.readouterr().out
+        )
