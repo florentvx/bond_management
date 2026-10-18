@@ -3,17 +3,14 @@ import datetime as dt
 import pandas as pd
 
 from bond_management import load_data
-from bond_management.dates import as_naive, bank_holidays
+from bond_management.dates import as_naive, next_business_day
 from bond_management.pricing import accrued, yield_from_price
 
 prices, bonds = load_data()
 inv = {b.isin: b for b in bonds if b.market == "conventional"}
 
 feed_day = as_naive(prices["as_of"].iloc[0]).date()
-hol = bank_holidays(feed_day.year) | bank_holidays(feed_day.year + 1)
-settle = feed_day + dt.timedelta(days=1)
-while settle.weekday() >= 5 or settle in hol:
-    settle += dt.timedelta(days=1)
+settle = next_business_day(feed_day)
 print(f"feed {feed_day:%d/%m/%Y} close, settlement T+1 = {settle:%d/%m/%Y} ({settle:%A})\n")
 
 rows = []
@@ -54,3 +51,5 @@ print(
         for r in df.sort_values("diff_bp", key=abs, ascending=False).head(4).itertuples()
     )
 )
+
+print("END")

@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 from conftest import make_bond
 
-from bond_management.dates import as_naive, bank_holidays
+from bond_management.dates import as_naive, next_business_day
 from bond_management.pricing import (
     accrued,
     cashflows,
@@ -34,9 +34,7 @@ def snapshot():
     """The committed Friday-close feed joined to the inventory, with T+1 settlement."""
     prices = pd.read_csv(FIXTURES / "gilts_20261009.csv")
     inv = pd.read_csv(FIXTURES / "inventory_20261008.csv").set_index("isin")
-    settle = as_naive(prices["as_of"].iloc[0]).date() + dt.timedelta(days=1)
-    while settle.weekday() >= 5 or settle in bank_holidays(settle.year):  # T+1 rolls over weekends/bank holidays
-        settle += dt.timedelta(days=1)
+    settle = next_business_day(as_naive(prices["as_of"].iloc[0]).date())  # T+1 rolls over weekends/bank holidays
     return prices, inv, settle
 
 

@@ -11,6 +11,7 @@ from bond_management.dates import (
     easter,
     excel_date,
     feed_date,
+    next_business_day,
     parse_date,
 )
 
@@ -77,6 +78,42 @@ class TestFeedDate:
 
     def test_new_year_crosses_year_boundary(self):
         assert feed_date(dt.date(2027, 1, 1)) == dt.date(2026, 12, 31)
+
+
+class TestNextBusinessDay:
+    def test_plain_weekday(self):
+        assert next_business_day(dt.date(2026, 10, 8)) == dt.date(2026, 10, 9)  # Thursday -> Friday
+
+    def test_friday_rolls_to_monday(self):
+        assert next_business_day(dt.date(2026, 10, 9)) == dt.date(2026, 10, 12)
+
+    def test_saturday_rolls_to_monday(self):
+        assert next_business_day(dt.date(2026, 10, 10)) == dt.date(2026, 10, 12)
+
+    def test_sunday_rolls_to_monday(self):
+        assert next_business_day(dt.date(2026, 10, 11)) == dt.date(2026, 10, 12)
+
+    def test_easter_weekend_skips_to_tuesday(self):
+        # Good Friday (3rd) / Saturday / Sunday / Easter Monday (6th) all off
+        assert next_business_day(dt.date(2026, 4, 2)) == dt.date(2026, 4, 7)  # Thursday
+        assert next_business_day(dt.date(2026, 4, 3)) == dt.date(2026, 4, 7)  # Good Friday
+
+    def test_christmas_lull(self):
+        # 25th (Fri) / 26th (Sat) / 27th (Sun) / 28th (Mon substitute) all off
+        assert next_business_day(dt.date(2026, 12, 24)) == dt.date(2026, 12, 29)
+
+    def test_new_year_crosses_year_boundary(self):
+        # 31st (Thu) -> 1st (Fri, holiday) -> weekend -> Monday 4th
+        assert next_business_day(dt.date(2026, 12, 31)) == dt.date(2027, 1, 4)
+
+    def test_is_strictly_after_and_never_a_weekend_or_holiday(self):
+        day = dt.date(2026, 12, 1)
+        for _ in range(60):
+            nxt = next_business_day(day)
+            assert nxt > day
+            assert nxt.weekday() < 5
+            assert nxt not in bank_holidays(nxt.year)
+            day = nxt
 
 
 class TestParseDate:

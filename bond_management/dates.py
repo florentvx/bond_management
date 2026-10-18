@@ -76,6 +76,14 @@ def feed_date(day=None):
     return day
 
 
+def next_business_day(day):
+    """The first trading day strictly after the given day: roll over weekends and bank holidays."""
+    day += dt.timedelta(days=1)
+    while day.weekday() >= 5 or day in bank_holidays(day.year):
+        day += dt.timedelta(days=1)
+    return day
+
+
 def as_naive(ts):
     """Drop the timezone so the feed's printed clock time compares with CLOSE."""
     ts = pd.Timestamp(ts)
