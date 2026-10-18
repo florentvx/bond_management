@@ -2,16 +2,11 @@
 
 Needs curl_cffi: plain requests is served DMO's CAPTCHA page, an impersonated
 Chrome session is not. DMO publishes the day's COB data during the working day;
-before that the script falls back to the latest date that has data.
+before that fetch() falls back to the latest date that has data.
 
-Usage (from the repo root):
-    python bond_management/dmo.py            # today's COB, or the latest published one
-    python bond_management/dmo.py --date 02/10/2026
-    python bond_management/dmo.py --date 2026-10-02 --out screens
-    python bond_management/dmo.py --force    # ignore the cache, hit DMO again
+The CLI is the repo-root `dmo.py` executable (see its docstring for usage).
 """
 
-import argparse
 import datetime as dt
 import json
 import re
@@ -22,12 +17,8 @@ from urllib.parse import quote
 import xlrd
 from curl_cffi import requests as cr
 
-if __package__:  # imported as part of the package
-    from .bond import Bond
-    from .dates import excel_date, parse_date, parse_utc_datetime
-else:  # running this file directly from the package folder
-    from bond import Bond
-    from dates import excel_date, parse_date, parse_utc_datetime
+from .bond import Bond
+from .dates import excel_date, parse_utc_datetime
 
 REPORT_CODE = "D1A"
 PAGE_URL = "https://www.dmo.gov.uk/data/pdfdatareport"
@@ -256,25 +247,3 @@ def read(path):
             section = name
     print(f"{Path(path).name}: {len(bonds)} gilts in issue on {cob_date:%d/%m/%Y}")
     return bonds
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Download the DMO gilts in issue (D1A) Excel export"
-    )
-    parser.add_argument(
-        "--date",
-        type=parse_date,
-        default=None,
-        help="COB date, dd/mm/yyyy (default: today)",
-    )
-    parser.add_argument(
-        "--out", default=str(OUT_DIR), help="output directory (default: screens)"
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="re-download even when a cached file exists",
-    )
-    args = parser.parse_args()
-    fetch(args.date, args.out, force=args.force)

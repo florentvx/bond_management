@@ -18,14 +18,9 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-if __package__:  # imported as part of the package
-    from . import dmo
-    from .bond import Bond
-    from .dates import CLOSE, as_naive, feed_date
-else:  # running this file directly from the package folder
-    import dmo
-    from bond import Bond
-    from dates import CLOSE, as_naive, feed_date
+from . import dmo
+from .bond import Bond
+from .dates import CLOSE, as_naive, feed_date
 
 __all__ = [
     "Bond",

@@ -1,7 +1,11 @@
+import datetime as dt
+
+import pytest
 from conftest import make_bond
 
 import bond_management.bond as bond_module
 from bond_management.bond import Bond
+from bond_management.pricing import coupon_schedule
 
 
 class TestBond:
@@ -29,6 +33,50 @@ class TestBond:
         b = make_bond()
         assert list(b.to_dict()) == bond_module.COLUMNS
         assert b.to_dict()["isin"] == b.isin
+
+    def test_schedule(self):
+        b = make_bond(dividend_dates="7 Jun/Dec", redemption_date=dt.date(2027, 12, 7))
+        assert b.schedule(dt.date(2026, 10, 12))[-3:] == [
+            dt.date(2026, 12, 7),
+            dt.date(2027, 6, 7),
+            dt.date(2027, 12, 7),
+        ]
+
+    def test_established_gilt_schedule_is_the_plain_pattern(self):
+        b = make_bond(
+            dividend_dates="7 Jun/Dec",
+            redemption_date=dt.date(2027, 12, 7),
+            first_issue_date=dt.date(2021, 3, 3),
+        )
+        assert b.schedule(dt.date(2026, 10, 12)) == coupon_schedule(
+            "7 Jun/Dec", dt.date(2027, 12, 7), dt.date(2026, 10, 12)
+        )
+
+    def test_new_issue_schedule_anchors_at_the_issue_date(self):
+        # 4 5/8% Treasury Gilt 2030 (T30K): first issued 11/09/2026, so the
+        # 22/05/2026 coupon never existed and the issue date anchors instead.
+        b = make_bond(
+            dividend_dates="22 May/Nov",
+            redemption_date=dt.date(2030, 5, 22),
+            first_issue_date=dt.date(2026, 9, 11),
+        )
+        assert b.schedule(dt.date(2026, 10, 19))[:2] == [
+            dt.date(2026, 9, 11),
+            dt.date(2026, 11, 22),
+        ]
+
+    def test_settlement_before_issue_keeps_the_pattern(self):
+        b = make_bond(
+            dividend_dates="22 May/Nov",
+            redemption_date=dt.date(2030, 5, 22),
+            first_issue_date=dt.date(2026, 10, 21),
+        )
+        assert dt.date(2026, 5, 22) in b.schedule(dt.date(2026, 10, 19))
+
+    def test_schedule_without_a_redemption_date_raises(self):
+        b = make_bond()
+        with pytest.raises(ValueError, match="no redemption date"):
+            b.schedule(dt.date(2026, 10, 19))
 
 
 class TestFrame:

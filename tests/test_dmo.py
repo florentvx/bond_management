@@ -381,12 +381,12 @@ class TestFetch:
         assert path.read_bytes() == b"fresh-bytes"
 
 
-class TestScriptMode:
-    def test_help_runs_as_a_direct_script(self):
-        """`python bond_management/dmo.py --help` still imports correctly (no package)."""
+class TestRootExecutable:
+    def test_help_runs(self):
+        """`python dmo.py --help` (repo-root executable) imports the package correctly."""
         root = Path(__file__).resolve().parent.parent
         done = subprocess.run(
-            [sys.executable, "bond_management/dmo.py", "--help"],
+            [sys.executable, "dmo.py", "--help"],
             cwd=root,
             capture_output=True,
             text=True,

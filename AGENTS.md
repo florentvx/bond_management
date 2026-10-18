@@ -5,10 +5,10 @@
 Load UK **gilt** (government bond) market data, modelize the market from it, and use that
 to manage a gilt bond portfolio.
 
-Concretely, the project today covers the data layer: joining a live price feed with the
-official DMO inventory on ISIN, cached on disk. The modeling and portfolio-management
-layers (yield curve / duration-risk modeling, position tracking, P&L, trade decisions) are
-the intended direction, not yet implemented.
+Concretely, the project today covers the data layer (joining a live price feed with the
+official DMO inventory on ISIN, cached on disk) plus the first modeling piece: a gilt
+cashflow/pricing engine (`pricing.py`, validated against the feed's own columns).
+Still to come: yield-curve / portfolio layers (position tracking, P&L, trade decisions).
 
 ## Remediation plan (completed)
 
@@ -20,6 +20,7 @@ Both gates are green: `.venv/Scripts/python -m pytest -q` + `ruff check .`.
 - [x] 1. `indexation_lag` field on `Bond` (3/8-month groups no longer conflated)
 - [x] 2. Cache validation: refuse to cache empty/partial/corrupt scrapes, return last good file
 - [x] 3. Import fallback: `if __package__` instead of `try/except ImportError` (no masked errors)
+  — later superseded: executables moved to the repo root, package imports are plain relative
 - [x] 4. Accurate post-fetch "close" message + no sleep before the final retry raise
 - [x] 5. `num()` handles vulgar fractions (`4¼`, `1 1/8%`)
 - [x] 6. Footer/blank D1A rows no longer corrupt `section`
@@ -36,17 +37,23 @@ Standard installable package layout (repo root ≠ package):
 - `pyproject.toml` — package metadata (`bond-management`), runtime dependencies,
   setuptools package discovery, pytest `testpaths`. Install with `pip install -e .`
   (already done in `.venv`; a fresh clone needs it once).
+- `__main__.py`, `dmo.py` — repo-root executables (the package itself is only ever
+  imported, never run): `python .` loads both sources and prints heads;
+  `python dmo.py [--date dd/mm/yyyy] [--out DIR] [--force]` fetches the DMO inventory.
 - `bond_management/` — the importable package:
   - `__init__.py` — entry point and data-loading orchestration. Public API
     (`__all__`): `load_data(out_dir="screens") -> (prices_df, list[Bond])`,
     `load_gilt_prices`, `scrape_gilts`, `cached_prices`, `feed_date`, `num`, `Bond`.
-  - `__main__.py` — `python -m bond_management` runs the loader and prints heads.
   - `dmo.py` — UK DMO "Gilts in Issue" (report **D1A**) downloader + `.xls` parser.
-    `read()` returns `list[Bond]`; usable as a library (`fetch`, `download_xls`,
-    `read`, `find_newest`, ...) and as a CLI.
+    `read()` returns `list[Bond]`; a library (`fetch`, `download_xls`,
+    `read`, `find_newest`, ...) — the CLI is the root `dmo.py` executable.
   - `bond.py` — the `Bond` class: every D1A field per gilt (isin, market,
     indexation_lag, section, dates, amounts, base RPI, ...). `Bond.frame(bonds)`
-    builds the inventory DataFrame. Home for upcoming bond methods.
+    builds the inventory DataFrame; `Bond.schedule(since)` derives coupon dates.
+  - `pricing.py` — gilt cashflows and analytics (conventional gilts): coupon
+    schedule from the D1A `dividend_dates` pattern, cashflows with ex-dividend
+    handling, ICMA accrued, `price` / `yield_from_price` (bisection),
+    `modified_duration`, `convexity`. Two yield conventions, see Conventions.
   - `dates.py` — all date logic: `CLOSE`, `easter`, `bank_holidays`, `feed_date`,
     `as_naive`, `parse_date`, `parse_utc_datetime`, `excel_date`.
 - `screens/` — **gitignored** local data cache: `gilts_YYYYMMDD.csv` (price snapshots),
@@ -54,7 +61,9 @@ Standard installable package layout (repo root ≠ package):
   first run. Do not delete casually; `load_data()` makes live network calls and writes here
   (path is relative to the current working directory — run from the repo root).
 - `tests/` — offline pytest suite (network monkeypatched, temp dirs for caches). Run with
-  `.venv/Scripts/python -m pytest -q` from the repo root.
+  `.venv/Scripts/python -m pytest -q` from the repo root. `tests/fixtures/` holds committed
+  snapshots (a Friday-close feed CSV + the inventory fields extracted from a D1A workbook)
+  that the pricing calibration tests replay.
 - `.venv/` — Python 3.12 virtualenv (gitignored).
 
 There is no `README`, no CI. Lint: `ruff` (installed in `.venv`, default rules — no
@@ -84,12 +93,12 @@ the price feed.
 pip install -e .
 
 # load both sources (cached; refreshes stale data) and print heads
-python -m bond_management
+python .
 
 # DMO inventory only (today's COB, or latest published)
-python bond_management/dmo.py
-python bond_management/dmo.py --date 02/10/2026 --out screens
-python bond_management/dmo.py --force   # ignore the cache, hit DMO again
+python dmo.py
+python dmo.py --date 02/10/2026 --out screens
+python dmo.py --force   # ignore the cache, hit DMO again
 
 # tests (offline)
 python -m pytest -q
@@ -119,10 +128,25 @@ Debug via VS Code "Python Debugger: Current File" (`.vscode/launch.json`).
 - **Style:** module docstring = user documentation; `UPPER_CASE` module constants;
   small helper functions with one-line docstrings; `print()` for user-facing messages
   (no logging); plain stdlib + pandas, no type hints, no dataclasses/config files.
-- Import works both as package (`import bond_management` — resolved by the editable
-  install or the workspace root) and as a script (`python bond_management/dmo.py`) —
-  the relative `dmo`/`bond`/`dates` imports are gated on `__package__`, so a missing
-  third-party dependency surfaces with its own ImportError instead of a masked one.
+- **Pricing conventions:** yields are decimals, prices per £100 nominal. `compound="semi"`
+  (the default) is ICMA actual/actual semi-annual — the UK market/DMO standard, matches the
+  feed's `dmo_yield_pct` (median ~0.4bp on the calibrated snapshot); `compound="annual"`
+  (annual, actual/365.25) matches the feed's `gross_yield_pct` (its own convention, median
+  ~0.3bp). Settlement is the caller's choice — the feed's `as_of` implies T+1 (business day).
+  From a gilt's D1A `ex_dividend_date`, settling on or after it drops the next coupon and
+  zeroes accrued (the redemption amount is still received, at its own date when the dropped
+  coupon is the final one). A gilt issued after the last scheduled coupon — e.g. T30K, first
+  issued 11/09/2026 — is anchored at its D1A `first_issue_date` via `Bond.schedule`: accrual
+  and the current-period fraction run from the issue date and the first coupon is the full
+  coupon (DMO's convention, matched within ~2bp on every calibrated feed row). The feed's
+  accrued/dirty/duration for such new issues follow a pro-rated-stub model its DMO-yield
+  column does not, so calibration solves engine yields from clean + the engine's accrued
+  rather than from the feed's dirty.
+- Imports: the package (`bond_management/`) is only ever imported, never run — its
+  modules use plain relative imports (`from . import dmo`). The executables live at
+  the repo root and import it absolutely (`from bond_management import ...`), resolved
+  by the editable install or by the root being on `sys.path` when run from there, so a
+  missing third-party dependency surfaces with its own ImportError instead of a masked one.
 
 ## Dependencies (declared in `pyproject.toml`)
 
@@ -136,7 +160,8 @@ layer: `yfinance`, `peewee` (SQLite ORM), `websockets`, `numpy`.
 ## Gotchas
 
 - `screens/` is gitignored — only `.gitignore`, `AGENTS.md`, `pyproject.toml`,
-  `bond_management/` and `tests/` are tracked.
+  `bond_management/`, `tests/` and the root executables (`__main__.py`, `dmo.py`)
+  are tracked.
 - Running `load_data()` hits the network and writes to `screens/`.
 - Date-stamped filenames are the cache keys; freshness rules are filename- and
   clock-based, not content-based.
