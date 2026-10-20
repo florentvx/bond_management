@@ -6,9 +6,10 @@ Load UK **gilt** (government bond) market data, modelize the market from it, and
 to manage a gilt bond portfolio.
 
 Concretely, the project today covers the data layer (joining a live price feed with the
-official DMO inventory on ISIN, cached on disk) plus the first modeling piece: a gilt
-cashflow/pricing engine (`pricing.py`, validated against the feed's own columns).
-Still to come: yield-curve / portfolio layers (position tracking, P&L, trade decisions).
+official DMO inventory on ISIN, cached on disk) plus the first modeling pieces: a gilt
+cashflow/pricing engine (`pricing.py`, validated against the feed's own columns) and a
+z-spread curve calibrated on the whole priced population (`zspread.py`).
+Still to come: the rest of the portfolio layer (position tracking, P&L, trade decisions).
 
 ## Remediation plan (completed)
 
@@ -54,8 +55,13 @@ Standard installable package layout (repo root ≠ package):
     schedule from the D1A `dividend_dates` pattern, cashflows with ex-dividend
     handling, ICMA accrued, `price` / `yield_from_price` (bisection),
     `modified_duration`, `convexity`. Two yield conventions, see Conventions.
+  - `zspread.py` — z-spread curve over `DEFAULT_TENORS` (1/3/5/10/20/30/50y,
+    linear interpolation, flat outside): `curve_price` discounts cashflows at
+    the curve, `residual_zspread` bisects the flat shift that reprices a gilt,
+    `calibrate` fits the nodes by Gauss-Newton minimising Σ residual², and
+    `fit` runs the whole thing on the feed + inventory (see Conventions).
   - `dates.py` — all date logic: `CLOSE`, `easter`, `bank_holidays`, `feed_date`,
-    `as_naive`, `parse_date`, `parse_utc_datetime`, `excel_date`.
+    `next_business_day`, `as_naive`, `parse_date`, `parse_utc_datetime`, `excel_date`.
 - `screens/` — **gitignored** local data cache: `gilts_YYYYMMDD.csv` (price snapshots),
   `gilts_in_issue_YYYYMMDD.xls` (inventory). A fresh clone starts empty and downloads on
   first run. Do not delete casually; `load_data()` makes live network calls and writes here
@@ -63,7 +69,7 @@ Standard installable package layout (repo root ≠ package):
 - `tests/` — offline pytest suite (network monkeypatched, temp dirs for caches). Run with
   `.venv/Scripts/python -m pytest -q` from the repo root. `tests/fixtures/` holds committed
   snapshots (a Friday-close feed CSV + the inventory fields extracted from a D1A workbook)
-  that the pricing calibration tests replay.
+  that the pricing and z-spread calibration tests replay.
 - `.venv/` — Python 3.12 virtualenv (gitignored).
 
 There is no `README`, no CI. Lint: `ruff` (installed in `.venv`, default rules — no
@@ -142,6 +148,15 @@ Debug via VS Code "Python Debugger: Current File" (`.vscode/launch.json`).
   accrued/dirty/duration for such new issues follow a pro-rated-stub model its DMO-yield
   column does not, so calibration solves engine yields from clean + the engine's accrued
   rather than from the feed's dirty.
+- **Z-spread curve:** seven benchmark nodes (`DEFAULT_TENORS` = 1/3/5/10/20/30/50y),
+  interpolated linearly and flat outside them; cashflows are discounted continuously,
+  `exp(-z(T) * (T - settlement))` over `(date - settlement).days / 365.25` years, so
+  z-spreads and residuals are decimals (the `fit` report quotes residuals in bp) while
+  prices stay per £100 nominal. `fit()` rolls the feed's `as_of` to T+1 (`next_business_day`)
+  and targets clean + the engine's accrued — the pricing tests' `dirty_of` convention —
+  minimising Σ residual² with equal weight per gilt in z-units (a bp weighs the same for
+  a 1y and a 45y gilt). A gilt maturing under the 1y node is repriced off the flat
+  extrapolation below it, which is where the largest residuals land (T26A).
 - Imports: the package (`bond_management/`) is only ever imported, never run — its
   modules use plain relative imports (`from . import dmo`). The executables live at
   the repo root and import it absolutely (`from bond_management import ...`), resolved
@@ -152,10 +167,11 @@ Debug via VS Code "Python Debugger: Current File" (`.vscode/launch.json`).
 
 Runtime: `pandas`, `requests` (price feed only), `beautifulsoup4` (price feed only),
 `curl_cffi` (DMO only — required for the package to import at all), `xlrd` (DMO only,
-legacy `.xls`). Optional extras: `test` = `pytest`, `lint` = `ruff`.
+legacy `.xls`), `numpy` (z-spread calibration only). Optional extras: `test` = `pytest`,
+`lint` = `ruff`.
 
-Installed in `.venv` but not declared — likely intended for the modeling/portfolio
-layer: `yfinance`, `peewee` (SQLite ORM), `websockets`, `numpy`.
+Installed in `.venv` but not declared — likely intended for the portfolio layer:
+`yfinance`, `peewee` (SQLite ORM), `websockets`.
 
 ## Gotchas
 

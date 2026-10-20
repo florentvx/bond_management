@@ -13,6 +13,7 @@ dependencies = [
     "beautifulsoup4",
     "curl_cffi",
     "xlrd",
+    "numpy",
 ]
 
 [project.optional-dependencies]
