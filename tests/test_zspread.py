@@ -7,7 +7,7 @@ import pytest
 from conftest import make_bond
 
 from bond_management.dates import as_naive, next_business_day
-from bond_management.pricing import accrued, coupon_schedule, price
+from bond_management.pricing import YEAR, accrued, coupon_schedule, price
 from bond_management.zspread import (
     DEFAULT_TENORS,
     MIN_LIFE_DAYS,
@@ -156,6 +156,19 @@ class TestCurvePrice:
         cum = curve_price(CPN, SCHED, SETTLE, DEFAULT_TENORS, FLAT)
         x = curve_price(CPN, SCHED, SETTLE, DEFAULT_TENORS, FLAT, ex)
         assert x < cum
+
+    @pytest.mark.parametrize(
+        "redemption", [dt.date(2031, 10, 12), dt.date(2076, 6, 7)]
+    )  # 5y (between the 3y/5y nodes) and 50y (past the last pillar)
+    def test_zero_coupon_discounts_as_100_exp_minus_zt(self, redemption):
+        """The textbook zero: one flow F at T years prices at F * exp(-z(T) * T)."""
+        z_curve = np.array([0.034, 0.036, 0.039, 0.042, 0.046, 0.050, 0.053, 0.056])
+        zero = [redemption]  # schedule with no coupons: only the redemption flow
+        T = (redemption - SETTLE).days / YEAR
+        z = np.interp(T, DEFAULT_TENORS, z_curve)
+        assert curve_price(0.0, zero, SETTLE, DEFAULT_TENORS, z_curve) == pytest.approx(
+            100.0 * np.exp(-z * T), abs=1e-9
+        )
 
 
 class TestResidualZspread:

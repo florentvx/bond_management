@@ -41,21 +41,25 @@ Standard installable package layout (repo root ≠ package):
   (already done in `.venv`; a fresh clone needs it once).
 - `dmo.py` — repo-root executable: `python dmo.py [--date dd/mm/yyyy] [--out DIR] [--force]`
   fetches the DMO inventory.
-- `yield_table.py`, `generate_graph.py` — repo-root reports (plain imports of the package):
-  `python yield_table.py` recalculates every feed yield against the engine;
-  `python generate_graph.py` calibrates the z-spread on the latest data and writes
-  `screens/par_yield_curve_YYYYMMDD.png` (synthetic par yield curve over 0.25y–50.25y —
-  wider than the pillars — with every conventional gilt's YTM on top, coloured by the
-  fit's residual z-spread), then shows the window.
+- `yield_table.py`, `generate_graph.py`, `zspread_history.py` — repo-root reports
+  (plain imports of the package): `python yield_table.py` recalculates every feed yield
+  against the engine; `python generate_graph.py` calibrates the z-spread on the latest
+  data and writes `screens/par_yield_curve_YYYYMMDD.png` (synthetic par yield curve over
+  0.25y–50.25y — wider than the pillars — with every conventional gilt's YTM on top,
+  coloured by the fit's residual z-spread), then shows the window;
+  `python zspread_history.py` replays the calibration over every cached
+  `gilts_*.csv` close in `screens/` and writes `screens/zspread_history.csv`
+  (one row per close: the eight pillar z-spreads in bp, plus feed/settle dates).
 - `bond_management/` — the importable package:
   - `__init__.py` — entry point and data-loading orchestration. Public API
     (`__all__`): `load_data(out_dir="screens") -> (prices_df, list[Bond])`,
     `load_gilt_prices`, `scrape_gilts`, `cached_prices`, `feed_date`, `num`, `Bond`.
   - `__main__.py` — CLI entry point: `python -m bond_management` prints the heads of
-    both sources, `python -m bond_management table` runs the yield table and
-    `python -m bond_management graph` the par-yield chart (argparse subcommands
-    dispatching to the root reports; the subcommands need the repo root as cwd,
-    heads works anywhere; each report still runs standalone).
+    both sources, `python -m bond_management table` runs the yield table,
+    `python -m bond_management graph` the par-yield chart and
+    `python -m bond_management zhistory` the pillar z-spread history (argparse
+    subcommands dispatching to the root reports; the subcommands need the repo root
+    as cwd, heads works anywhere; each report still runs standalone).
   - `dmo.py` — UK DMO "Gilts in Issue" (report **D1A**) downloader + `.xls` parser.
     `read()` returns `list[Bond]`; a library (`fetch`, `download_xls`,
     `read`, `find_newest`, ...) — the CLI is the root `dmo.py` executable.
@@ -126,6 +130,9 @@ python -m bond_management table   # or: python yield_table.py
 
 # calibrate the z-spread on the latest data and draw the par-yield vs market chart
 python -m bond_management graph   # or: python generate_graph.py
+
+# pillar z-spreads for every cached close in screens/ (offline)
+python -m bond_management zhistory   # or: python zspread_history.py
 
 # tests (offline)
 python -m pytest -q
@@ -204,7 +211,8 @@ Debug via VS Code "Python Debugger: Current File" (`.vscode/launch.json`).
 - Imports: the package's modules use plain relative imports (`from . import dmo`) and
   are library code — the one exception is `bond_management/__main__.py`, a thin
   dispatcher (`python -m bond_management`) that reaches the root reports via
-  `import yield_table` / `import generate_graph` (cwd on `sys.path`). The other
+  `import yield_table` / `import generate_graph` / `import zspread_history` (cwd on
+  `sys.path`). The other
   repo-root executables import the package absolutely (`from bond_management import ...`),
   resolved by the editable install or by the root being on `sys.path` when run from
   there, so a missing third-party dependency surfaces with its own ImportError instead
@@ -225,7 +233,7 @@ Installed in `.venv` but not declared — likely intended for the portfolio laye
 
 - `screens/` is gitignored — only `.gitignore`, `AGENTS.md`, `LICENSE`, `pyproject.toml`,
   `bond_management/`, `tests/` and the root scripts (`dmo.py`, `yield_table.py`,
-  `generate_graph.py`) are tracked.
+  `generate_graph.py`, `zspread_history.py`) are tracked.
 - Running `load_data()` hits the network and writes to `screens/`.
 - Date-stamped filenames are the cache keys; freshness rules are filename- and
   clock-based, not content-based.
