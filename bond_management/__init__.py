@@ -186,7 +186,17 @@ def newest_cache(out_dir):
     return files[-1] if files else None
 
 
-def scrape_problems(df, previous_rows):
+def matures_date(value):
+    """Parse a feed 'Matures' cell ('2026-10-22', '22-Oct-2036', '22/10/2036') or None."""
+    for fmt in ("%Y-%m-%d", "%d-%b-%Y", "%d/%m/%Y"):
+        try:
+            return dt.datetime.strptime(str(value).strip(), fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def scrape_problems(df, previous):
     """Reasons a scraped price table must not be written to the cache."""
     if not len(df):
         return ["no rows"]
@@ -200,8 +210,19 @@ def scrape_problems(df, previous_rows):
     ]
     if nulls:
         problems.append(f"null values in {', '.join(nulls)}")
-    if previous_rows is not None and len(df) < previous_rows:
-        problems.append(f"only {len(df)} of {previous_rows} rows")
+    if previous is not None and {"isin", "matures"} <= set(previous.columns):
+        as_of = pd.to_datetime(df["as_of"], errors="coerce").max()
+        on = as_naive(as_of).date() if not pd.isna(as_of) else feed_date()
+        live = previous.dropna(subset=["isin"])
+        still_live = []
+        for isin in sorted(set(live["isin"]) - set(df["isin"].dropna())):
+            matures = matures_date(live.loc[live["isin"] == isin, "matures"].iloc[0])
+            if matures is None or matures > on:
+                still_live.append(isin)
+        if still_live:
+            problems.append(
+                f"missing {', '.join(still_live)} (still live on {on:%d/%m/%Y})"
+            )
     return problems
 
 
@@ -211,9 +232,11 @@ def load_gilt_prices(out_dir=OUT_DIR, force=False):
     Weekend and bank-holiday runs point at the previous trading day's file, and
     a cached file is only reused once its feed timestamp reaches that day's
     17:00 close; otherwise the feed is refetched and saved under the same name.
-    An empty, partial or corrupt scrape is never written: the newest cached
-    file is kept and returned instead.
-    force=True skips the cache and refetches the feed.
+    A scrape that is empty, corrupt or missing gilts that were still live in
+    the newest cached close is never written: that file is kept and returned
+    instead. A gilt that matured out of the feed since the cached close is
+    expected, not a partial scrape. force=True skips the cache and refetches
+    the feed.
     """
     out_dir = Path(out_dir)
     day = feed_date()
@@ -232,7 +255,7 @@ def load_gilt_prices(out_dir=OUT_DIR, force=False):
             old_df = pd.read_csv(old)
         except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError):
             old_df = None
-    problems = scrape_problems(df, len(old_df) if old_df is not None else None)
+    problems = scrape_problems(df, old_df)
     if problems:
         print(f"{path.name} <- refusing to cache: {'; '.join(problems)}")
         if old_df is not None:

@@ -64,12 +64,30 @@ class TestNum:
         assert bm.num("12/06, 12/12") == 12.0
 
 
-def write_cache(tmp_path, as_of, day="20261009", rows=1):
+class TestMaturesDate:
+    def test_iso(self):
+        assert bm.matures_date("2026-10-22") == dt.date(2026, 10, 22)
+
+    def test_site_format(self):
+        assert bm.matures_date("22-Oct-2036") == dt.date(2036, 10, 22)
+
+    def test_slashed(self):
+        assert bm.matures_date("22/10/2036") == dt.date(2036, 10, 22)
+
+    def test_unparsable(self):
+        assert bm.matures_date("soon") is None
+
+
+def write_cache(tmp_path, as_of, day="20261009", rows=1, isins=None, matures="2099-12-31"):
+    """A cached gilts_*.csv: distinct fake ISINs, all maturing on `matures`."""
+    if isins is None:
+        isins = [f"GB{i:010d}" for i in range(rows)]
     df = pd.DataFrame(
         [
-            {c: 1.0 for c in bm.COLUMNS} | {"isin": "GB00B3KJDS62", "as_of": as_of}
+            {c: 1.0 for c in bm.COLUMNS}
+            | {"isin": isin, "matures": matures, "as_of": as_of}
+            for isin in isins
         ]
-        * rows
     )
     path = tmp_path / f"gilts_{day}.csv"
     df.to_csv(path, index=False)
@@ -160,7 +178,11 @@ class TestLoadGiltPrices:
         def fake_scrape():
             scrape_calls.append(1)
             df = pd.DataFrame(
-                [{c: 1.0 for c in bm.COLUMNS} for _ in range(rows)],
+                [
+                    {c: 1.0 for c in bm.COLUMNS}
+                    | {"isin": f"GB{i:010d}", "matures": "2099-12-31"}
+                    for i in range(rows)
+                ],
                 columns=bm.COLUMNS,
             )
             for col in drop:
@@ -194,8 +216,39 @@ class TestLoadGiltPrices:
         assert len(df) == 10
         assert not (tmp_path / "gilts_20261009.csv").exists()
         out = capsys.readouterr().out
-        assert "gilts_20261009.csv <- refusing to cache: only 1 of 10 rows" in out
+        assert "gilts_20261009.csv <- refusing to cache: missing GB0000000001" in out
+        assert "(still live on 09/10/2026)" in out
         assert "keeping gilts_20261008.csv" in out
+
+    def test_matured_gilt_leaving_the_feed_is_cached(self, tmp_path, monkeypatch):
+        write_cache(
+            tmp_path,
+            "2026-10-08 17:00:00+00:00",
+            day="20261008",
+            isins=["GB0000000001"],
+            matures="2026-10-08",
+        )
+        calls = []
+        self.patch(monkeypatch, calls, rows=1)
+        df = bm.load_gilt_prices(tmp_path)
+        assert calls == [1]
+        assert len(df) == 1
+        assert len(pd.read_csv(tmp_path / "gilts_20261009.csv")) == 1
+
+    def test_unparsable_matures_is_treated_as_live(self, tmp_path, monkeypatch):
+        write_cache(
+            tmp_path,
+            "2026-10-08 17:00:00+00:00",
+            day="20261008",
+            isins=["GB0000000001"],
+            matures="soon",
+        )
+        calls = []
+        self.patch(monkeypatch, calls, rows=1)
+        df = bm.load_gilt_prices(tmp_path)
+        assert calls == [1]
+        assert len(df) == 1
+        assert not (tmp_path / "gilts_20261009.csv").exists()
 
     def test_partial_scrape_forced_still_refused(self, tmp_path, monkeypatch):
         write_cache(tmp_path, "2026-10-09 17:00:00+00:00", day="20261009", rows=10)

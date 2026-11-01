@@ -8,7 +8,8 @@ to manage a gilt bond portfolio.
 Concretely, the project today covers the data layer (joining a live price feed with the
 official DMO inventory on ISIN, cached on disk) plus the first modeling pieces: a gilt
 cashflow/pricing engine (`pricing.py`, validated against the feed's own columns) and a
-z-spread curve calibrated on the whole priced population (`zspread.py`).
+z-spread curve calibrated on the priced population, weighted toward par so the
+tax-skewed low-coupon gilts don't drag it (`zspread.py`).
 Still to come: the rest of the portfolio layer (position tracking, P&L, trade decisions).
 
 ## Remediation plan (completed)
@@ -38,13 +39,23 @@ Standard installable package layout (repo root ≠ package):
 - `pyproject.toml` — package metadata (`bond-management`), runtime dependencies,
   setuptools package discovery, pytest `testpaths`. Install with `pip install -e .`
   (already done in `.venv`; a fresh clone needs it once).
-- `__main__.py`, `dmo.py` — repo-root executables (the package itself is only ever
-  imported, never run): `python .` loads both sources and prints heads;
-  `python dmo.py [--date dd/mm/yyyy] [--out DIR] [--force]` fetches the DMO inventory.
+- `dmo.py` — repo-root executable: `python dmo.py [--date dd/mm/yyyy] [--out DIR] [--force]`
+  fetches the DMO inventory.
+- `yield_table.py`, `generate_graph.py` — repo-root reports (plain imports of the package):
+  `python yield_table.py` recalculates every feed yield against the engine;
+  `python generate_graph.py` calibrates the z-spread on the latest data and writes
+  `screens/par_yield_curve_YYYYMMDD.png` (synthetic par yield curve over 0.25y–50.25y —
+  wider than the pillars — with every conventional gilt's YTM on top, coloured by the
+  fit's residual z-spread), then shows the window.
 - `bond_management/` — the importable package:
   - `__init__.py` — entry point and data-loading orchestration. Public API
     (`__all__`): `load_data(out_dir="screens") -> (prices_df, list[Bond])`,
     `load_gilt_prices`, `scrape_gilts`, `cached_prices`, `feed_date`, `num`, `Bond`.
+  - `__main__.py` — CLI entry point: `python -m bond_management` prints the heads of
+    both sources, `python -m bond_management table` runs the yield table and
+    `python -m bond_management graph` the par-yield chart (argparse subcommands
+    dispatching to the root reports; the subcommands need the repo root as cwd,
+    heads works anywhere; each report still runs standalone).
   - `dmo.py` — UK DMO "Gilts in Issue" (report **D1A**) downloader + `.xls` parser.
     `read()` returns `list[Bond]`; a library (`fetch`, `download_xls`,
     `read`, `find_newest`, ...) — the CLI is the root `dmo.py` executable.
@@ -55,15 +66,19 @@ Standard installable package layout (repo root ≠ package):
     schedule from the D1A `dividend_dates` pattern, cashflows with ex-dividend
     handling, ICMA accrued, `price` / `yield_from_price` (bisection),
     `modified_duration`, `convexity`. Two yield conventions, see Conventions.
-  - `zspread.py` — z-spread curve over `DEFAULT_TENORS` (1/3/5/10/20/30/50y,
+  - `zspread.py` — z-spread curve over `DEFAULT_TENORS` (0.5/1/3/5/10/20/30/50y,
     linear interpolation, flat outside): `curve_price` discounts cashflows at
     the curve, `residual_zspread` bisects the flat shift that reprices a gilt,
-    `calibrate` fits the nodes by Gauss-Newton minimising Σ residual², and
-    `fit` runs the whole thing on the feed + inventory (see Conventions).
+    `price_weight` (normal law around par, `WEIGHT_SIGMA` = 20) sets each gilt's
+    say in the fit, `calibrate` fits the nodes by Gauss-Newton minimising
+    Σ (weight · residual)², and `fit` runs the whole thing on the feed +
+    inventory, dropping gilts maturing within `MIN_LIFE_DAYS` (30) of settlement
+    (see Conventions).
   - `dates.py` — all date logic: `CLOSE`, `easter`, `bank_holidays`, `feed_date`,
     `next_business_day`, `as_naive`, `parse_date`, `parse_utc_datetime`, `excel_date`.
 - `screens/` — **gitignored** local data cache: `gilts_YYYYMMDD.csv` (price snapshots),
-  `gilts_in_issue_YYYYMMDD.xls` (inventory). A fresh clone starts empty and downloads on
+  `gilts_in_issue_YYYYMMDD.xls` (inventory), plus generated charts
+  (`par_yield_curve_YYYYMMDD.png`). A fresh clone starts empty and downloads on
   first run. Do not delete casually; `load_data()` makes live network calls and writes here
   (path is relative to the current working directory — run from the repo root).
 - `tests/` — offline pytest suite (network monkeypatched, temp dirs for caches). Run with
@@ -99,12 +114,18 @@ the price feed.
 pip install -e .
 
 # load both sources (cached; refreshes stale data) and print heads
-python .
+python -m bond_management
 
 # DMO inventory only (today's COB, or latest published)
 python dmo.py
 python dmo.py --date 02/10/2026 --out screens
 python dmo.py --force   # ignore the cache, hit DMO again
+
+# recalc the yield table for every feed gilt vs the engine (needs repo-root cwd)
+python -m bond_management table   # or: python yield_table.py
+
+# calibrate the z-spread on the latest data and draw the par-yield vs market chart
+python -m bond_management graph   # or: python generate_graph.py
 
 # tests (offline)
 python -m pytest -q
@@ -119,9 +140,11 @@ Debug via VS Code "Python Debugger: Current File" (`.vscode/launch.json`).
 
 - **Cache freshness:** price CSVs are reused only once their `as_of` reaches that day's
   **17:00 UTC close** (`CLOSE`); weekends *and England & Wales bank holidays* (computed
-  in `bank_holidays()`, one-off extras excluded) fall back via `feed_date`. Empty, partial
-  or corrupt scrapes are never cached — the newest good `gilts_*.csv` is kept and returned
-  instead. The newest `gilts_in_issue_*.xls` by filename is reused, re-downloaded when
+  in `bank_holidays()`, one-off extras excluded) fall back via `feed_date`. Empty, corrupt
+  or missing-still-live-gilt scrapes are never cached — the newest good `gilts_*.csv` is
+  kept and returned instead (a gilt that matured out of the feed since that close is
+  expected, checked per ISIN in `scrape_problems`, not a partial scrape). The newest
+  `gilts_in_issue_*.xls` by filename is reused, re-downloaded when
   older than `dmo.MAX_AGE_DAYS` (31) or when a priced ISIN is missing; `force=True` /
   `--force` skips both caches.
 - **Bot protection:** DMO requires `curl_cffi` Chrome impersonation — plain `requests`
@@ -148,26 +171,48 @@ Debug via VS Code "Python Debugger: Current File" (`.vscode/launch.json`).
   accrued/dirty/duration for such new issues follow a pro-rated-stub model its DMO-yield
   column does not, so calibration solves engine yields from clean + the engine's accrued
   rather than from the feed's dirty.
-- **Z-spread curve:** seven benchmark nodes (`DEFAULT_TENORS` = 1/3/5/10/20/30/50y),
+- **Z-spread curve:** eight benchmark nodes (`DEFAULT_TENORS` = 0.5/1/3/5/10/20/30/50y),
   interpolated linearly and flat outside them; cashflows are discounted continuously,
   `exp(-z(T) * (T - settlement))` over `(date - settlement).days / 365.25` years, so
   z-spreads and residuals are decimals (the `fit` report quotes residuals in bp) while
   prices stay per £100 nominal. `fit()` rolls the feed's `as_of` to T+1 (`next_business_day`)
   and targets clean + the engine's accrued — the pricing tests' `dirty_of` convention —
-  minimising Σ residual² with equal weight per gilt in z-units (a bp weighs the same for
-  a 1y and a 45y gilt). A gilt maturing under the 1y node is repriced off the flat
-  extrapolation below it, which is where the largest residuals land (T26A).
-- Imports: the package (`bond_management/`) is only ever imported, never run — its
-  modules use plain relative imports (`from . import dmo`). The executables live at
-  the repo root and import it absolutely (`from bond_management import ...`), resolved
-  by the editable install or by the root being on `sys.path` when run from there, so a
-  missing third-party dependency surfaces with its own ImportError instead of a masked one.
+  minimising Σ (weight · residual)² with z-units throughout (a bp weighs the same for
+  a 1y and a 45y gilt), each gilt's contribution scaled by `price_weight`: a normal
+  law (σ = `WEIGHT_SIGMA` = 20 price points) around par, so deep-discount low-coupon
+  gilts — TG61 at 22.7, TR73 at 28.3, rich on UK tax treatment rather than yield —
+  carry weight ≈ 0 and cannot drift the curve (the report has the weight per gilt,
+  `generate_graph.py` prints the lightest). Gilts maturing within `MIN_LIFE_DAYS`
+  (30) of settlement are left out with a printed note — a bond days from redemption
+  says nothing about the curve (T26A on both snapshots) — leaving residuals within
+  ~30bp for everything the fit counts (median ~3bp); the ignored deep discounts sit
+  up to ~30bp away by construction, which is the point.
+- **Par curve (`generate_graph.py`):** one synthetic gilt per grid point — semi-annual
+  coupon, settlement mid-period (a coupon `SETTLE_LAG` = 91 days back, so accrued is a
+  quarter's coupon), redemption 0.25y…50.25y in six-month steps — and its coupon is the
+  one pricing at clean 100 under the curve; clean price is affine in the coupon, so two
+  `curve_price` evaluations (0% and 1%) solve it exactly. Gilts plot at their own
+  semi-annual YTM (T+1 settlement, engine accrued), the sub-month ones left out as in
+  the fit, colour = `fit`'s `residual_bp`
+  (positive = cheap) — a price residual against the fitted curve on the gilt's own
+  cashflows, so for low-coupon gilts it can read opposite to the point's side of the
+  par line (par yield is coupon-weighted, their YTM is redemption-weighted); grid
+  points outside 0.5–50y are drawn dashed over the flat part.
+- Imports: the package's modules use plain relative imports (`from . import dmo`) and
+  are library code — the one exception is `bond_management/__main__.py`, a thin
+  dispatcher (`python -m bond_management`) that reaches the root reports via
+  `import yield_table` / `import generate_graph` (cwd on `sys.path`). The other
+  repo-root executables import the package absolutely (`from bond_management import ...`),
+  resolved by the editable install or by the root being on `sys.path` when run from
+  there, so a missing third-party dependency surfaces with its own ImportError instead
+  of a masked one.
 
 ## Dependencies (declared in `pyproject.toml`)
 
 Runtime: `pandas`, `requests` (price feed only), `beautifulsoup4` (price feed only),
 `curl_cffi` (DMO only — required for the package to import at all), `xlrd` (DMO only,
-legacy `.xls`), `numpy` (z-spread calibration only). Optional extras: `test` = `pytest`,
+legacy `.xls`), `numpy` (z-spread calibration only), `matplotlib` (root `generate_graph.py`
+only). Optional extras: `test` = `pytest`,
 `lint` = `ruff`.
 
 Installed in `.venv` but not declared — likely intended for the portfolio layer:
@@ -175,9 +220,9 @@ Installed in `.venv` but not declared — likely intended for the portfolio laye
 
 ## Gotchas
 
-- `screens/` is gitignored — only `.gitignore`, `AGENTS.md`, `pyproject.toml`,
-  `bond_management/`, `tests/` and the root executables (`__main__.py`, `dmo.py`)
-  are tracked.
+- `screens/` is gitignored — only `.gitignore`, `AGENTS.md`, `LICENSE`, `pyproject.toml`,
+  `bond_management/`, `tests/` and the root scripts (`dmo.py`, `yield_table.py`,
+  `generate_graph.py`) are tracked.
 - Running `load_data()` hits the network and writes to `screens/`.
 - Date-stamped filenames are the cache keys; freshness rules are filename- and
   clock-based, not content-based.

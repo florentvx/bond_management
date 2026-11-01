@@ -2,19 +2,25 @@
 
     values, report = fit(prices, bonds)
 
-Benchmark z-spreads sit at DEFAULT_TENORS (1, 3, 5, 10, 20, 30 and 50
+Benchmark z-spreads sit at DEFAULT_TENORS (0.5, 1, 3, 5, 10, 20, 30 and 50
 years) and interpolate linearly between the nodes, flat outside the ends.
-Each cashflow is discounted at the curve with continuous compounding,
+Gilts maturing within MIN_LIFE_DAYS of settlement are left out: a bond a few
+days from redemption says nothing useful about the curve. Each cashflow is
+discounted at the curve with continuous compounding,
 exp(-z(T) * (T - settlement)) over (date - settlement).days / 365.25 years,
 reusing pricing.cashflows (ex-dividend handling included), so the curve's
 view of a gilt is a dirty price per 100 nominal.
 
 The residual z-spread of a gilt is the flat shift added to the whole curve
-that reprices it exactly; calibrate() picks the nodes minimising the sum of
-squared residuals over the priced population (Gauss-Newton with a
-finite-difference Jacobian and Levenberg damping, numpy only). Everything is
-in decimals - the report quotes residuals in bp - and settlement is the
-caller's: fit() rolls the feed's date to T+1. Conventional gilts only.
+that reprices it exactly; calibrate() picks the nodes minimising the weighted
+sum of squared residuals over the priced population (Gauss-Newton with a
+finite-difference Jacobian and Levenberg damping, numpy only). Each gilt's
+weight is a normal law in its dirty price's distance from par (price_weight,
+sigma WEIGHT_SIGMA), so deep-discount low-coupon gilts - which trade rich on
+their tax treatment rather than their yield - barely move the curve. The
+report quotes the raw residuals in bp next to the weight. Everything else is
+in decimals and settlement is the caller's: fit() rolls the feed's date to
+T+1. Conventional gilts only.
 """
 
 import datetime as dt
@@ -24,18 +30,24 @@ import numpy as np
 import pandas as pd
 
 from .dates import as_naive, next_business_day
-from .pricing import BRACKET, TOL, YEAR, accrued, cashflows
+from .pricing import BRACKET, NOMINAL, TOL, YEAR, accrued, cashflows
 
 __all__ = [
     "DEFAULT_TENORS",
+    "MIN_LIFE_DAYS",
+    "WEIGHT_SIGMA",
     "calibrate",
     "curve_price",
     "fit",
+    "price_weight",
     "residual_zspread",
     "z_at",
 ]
 
-DEFAULT_TENORS = (1.0, 3.0, 5.0, 10.0, 20.0, 30.0, 50.0)
+DEFAULT_TENORS = (0.5, 1.0, 3.0, 5.0, 10.0, 20.0, 30.0, 50.0)
+MIN_LIFE_DAYS = 30  # gilts maturing sooner are left out of the fit (and the graph)
+MIN_LIFE = dt.timedelta(days=MIN_LIFE_DAYS)
+WEIGHT_SIGMA = 20.0  # price points from par at which a gilt's weight falls to exp(-1/2)
 STEP = 1e-6  # finite-difference increment behind the Jacobian
 STEP_TOL = 1e-10  # a node this settled wants to move no further
 STALL_TOL = 1e-10  # relative gain in the sum of squares that still counts as progress
@@ -48,6 +60,11 @@ DAMPING_CEILING = 1e6
 def z_at(tenors, values, t):
     """z at the year-fraction t: linear between the nodes, flat outside them."""
     return np.interp(t, tenors, values)
+
+
+def price_weight(dirty):
+    """How much a gilt counts in the fit: a normal law around par (dirty = 100)."""
+    return float(np.exp(-0.5 * ((dirty - NOMINAL) / WEIGHT_SIGMA) ** 2))
 
 
 @lru_cache(maxsize=1024)
@@ -125,28 +142,34 @@ def _jacobian(settlement, rows, tenors, values, residuals):
 
 
 def calibrate(settlement, rows, tenors=DEFAULT_TENORS):
-    """(values, residuals): the nodes minimising the squared residuals over the rows.
+    """(values, residuals): the nodes minimising the weighted squared residuals.
 
     Each row is a dict with coupon_pct, schedule, dirty (the price to hit),
     ex_dividend_date and dmo_yield (decimal, whose median sets the flat start
-    2 * ln(1 + y / 2)). Gauss-Newton from that flat curve, Levenberg-damped;
-    it stops once no node wants a STEP_TOL move or the sum of squares stalls.
+    2 * ln(1 + y / 2)) plus an optional weight (default 1) saying how much its
+    residual counts - fit() fills it with price_weight. Gauss-Newton from that
+    flat curve, Levenberg-damped on the weighted sum of squares; it stops once
+    no node wants a STEP_TOL move or the sum of squares stalls. The residuals
+    handed back are the raw z-spreads the report quotes, not the weighted ones.
     """
     if not rows:
         raise ValueError("nothing to calibrate")
+    weights = np.array([row.get("weight", 1.0) for row in rows])
     start = 2 * np.log(1 + np.median([row["dmo_yield"] for row in rows]) / 2)
     values = np.full(len(tenors), start)
     residuals = _residuals(settlement, rows, tenors, values)
-    sse = float(residuals @ residuals)
+    sse = float((weights * residuals) @ (weights * residuals))
     damping = DAMPING
     for _ in range(MAX_STEPS):
-        jacobian = _jacobian(settlement, rows, tenors, values, residuals)
+        jacobian = weights[:, None] * _jacobian(
+            settlement, rows, tenors, values, residuals
+        )
         lhs = jacobian.T @ jacobian + damping * np.eye(len(tenors))
-        delta = np.linalg.solve(lhs, -jacobian.T @ residuals)
+        delta = np.linalg.solve(lhs, -jacobian.T @ (weights * residuals))
         if np.abs(delta).max() < STEP_TOL:
             break
         trial = _residuals(settlement, rows, tenors, values + delta)
-        trial_sse = float(trial @ trial)
+        trial_sse = float((weights * trial) @ (weights * trial))
         if trial_sse >= sse:
             damping *= 10
             if damping > DAMPING_CEILING:
@@ -165,24 +188,31 @@ def fit(prices_df, bonds, tenors=DEFAULT_TENORS):
 
     Joins the feed to `bonds` on isin, prices each match at T+1 settlement
     from the feed's timestamp (clean plus the engine's accrued, the dirty_of
-    convention of the pricing tests) and runs calibrate. The report has one
-    row per fitted gilt: isin, tidm, name, section, residual_bp,
-    model_price (the curve's dirty price) and market_price.
+    convention of the pricing tests) and runs calibrate. Gilts maturing within
+    MIN_LIFE_DAYS of settlement are left out; every fitted gilt is weighted by
+    price_weight, so deep-discount gilts (tax-skewed, far from par) pull the
+    curve little. The report has one row per fitted gilt: isin, tidm, name,
+    section, weight, residual_bp, model_price (the curve's dirty price) and
+    market_price.
     """
     conventional = {b.isin: b for b in bonds if b.market == "conventional"}
     settle = next_business_day(as_naive(prices_df["as_of"].iloc[0]).date())
-    rows, missing = [], []
+    rows, missing, expiring = [], [], []
     for _, r in prices_df.iterrows():
         bond = conventional.get(r["isin"])
         if bond is None:
             missing.append(r["isin"])
             continue
         schedule = bond.schedule(settle)
+        if not schedule or schedule[-1] - settle < MIN_LIFE:
+            expiring.append(r["tidm"])
+            continue
         ex = (
             dt.date.fromisoformat(str(bond.ex_dividend_date))
             if bond.ex_dividend_date
             else None
         )
+        dirty = r["clean_price"] + accrued(r["coupon_pct"], schedule, settle, ex)
         rows.append(
             {
                 "isin": r["isin"],
@@ -192,13 +222,18 @@ def fit(prices_df, bonds, tenors=DEFAULT_TENORS):
                 "coupon_pct": r["coupon_pct"],
                 "schedule": schedule,
                 "ex_dividend_date": ex,
-                "dirty": r["clean_price"]
-                + accrued(r["coupon_pct"], schedule, settle, ex),
+                "dirty": dirty,
                 "dmo_yield": r["dmo_yield_pct"] / 100,
+                "weight": price_weight(dirty),
             }
         )
     if missing:
         print(f"no conventional inventory match for {', '.join(sorted(set(missing)))}")
+    if expiring:
+        print(
+            f"left out of the fit: {', '.join(expiring)} "
+            f"(maturing within {MIN_LIFE_DAYS} days of settlement)"
+        )
     if not rows:
         raise ValueError("no priced conventional gilts to fit")
     values, residuals = calibrate(settle, rows, tenors)
@@ -208,6 +243,7 @@ def fit(prices_df, bonds, tenors=DEFAULT_TENORS):
             "tidm": [row["tidm"] for row in rows],
             "name": [row["name"] for row in rows],
             "section": [row["section"] for row in rows],
+            "weight": [row["weight"] for row in rows],
             "residual_bp": residuals * 10_000,
             "model_price": [
                 curve_price(
