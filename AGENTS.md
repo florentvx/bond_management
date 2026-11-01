@@ -162,9 +162,12 @@ Debug via VS Code "Python Debugger: Current File" (`.vscode/launch.json`).
   feed's `dmo_yield_pct` (median ~0.4bp on the calibrated snapshot); `compound="annual"`
   (annual, actual/365.25) matches the feed's `gross_yield_pct` (its own convention, median
   ~0.3bp). Settlement is the caller's choice — the feed's `as_of` implies T+1 (business day).
-  From a gilt's D1A `ex_dividend_date`, settling on or after it drops the next coupon and
-  zeroes accrued (the redemption amount is still received, at its own date when the dropped
-  coupon is the final one). A gilt issued after the last scheduled coupon — e.g. T30K, first
+  from a gilt's D1A `ex_dividend_date`, settling inside `[ex_date, the coupon that ex-date
+  detaches)` drops that coupon and zeroes accrued (the redemption amount is still received,
+  at its own date when the dropped coupon is the final one); once that coupon is paid the
+  gilt trades cum again — the D1A field is point-in-time as of the inventory, so an ex-date
+  already in the past does not on its own mean ex-dividend. A gilt issued after the last
+  scheduled coupon — e.g. T30K, first
   issued 11/09/2026 — is anchored at its D1A `first_issue_date` via `Bond.schedule`: accrual
   and the current-period fraction run from the issue date and the first coupon is the full
   coupon (DMO's convention, matched within ~2bp on every calibrated feed row). The feed's

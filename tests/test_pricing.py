@@ -367,3 +367,53 @@ class TestFinalPeriodExDividend:
         cum = price(4.0, sched, settle, 0.05)
         x = price(4.0, sched, settle, 0.05, ex)
         assert cum - x == pytest.approx(2.0 * 1.025 ** -(6 / 183))
+
+
+class TestExDividendWindow:
+    """An ex-date only detaches the coupon it precedes; after that payment the gilt is cum again.
+
+    4% Treasury Gilt 2031 (22 Apr/Oct) carries ex-date 13/10/2026 on the
+    08/10/2026 D1A — the ex-date for the 22/10/2026 coupon, already paid by
+    the 02/11/2026 settlement. The gilt then trades cum for 22/04/2027: the
+    feed quotes accrued 0.121 and DMO yield 4.941%, which the old "settlement
+    on or after the ex-date" rule missed by 42bp, dropping a coupon no one had
+    gone ex for. The D1A field is point-in-time, so a past ex-date alone says
+    nothing: only the window up to its coupon does.
+    """
+
+    CPN = 4.0
+    CLEAN = 95.89  # feed close 30/10/2026
+    EX = dt.date(2026, 10, 13)  # ex-date of the 22/10/2026 coupon
+    SETTLE = dt.date(2026, 11, 2)  # T+1 after the feed close
+    REDEMPTION = dt.date(2031, 10, 22)
+
+    def sched(self, settle):
+        return coupon_schedule("22 Apr/Oct", self.REDEMPTION, settle)
+
+    def test_trades_cum_again_once_the_detached_coupon_is_paid(self):
+        sched = self.sched(self.SETTLE)
+        assert accrued(self.CPN, sched, self.SETTLE, self.EX) == accrued(
+            self.CPN, sched, self.SETTLE
+        )
+        assert cashflows(self.CPN, sched, self.SETTLE, self.EX)[0] == (
+            dt.date(2027, 4, 22),
+            2.0,
+        )
+
+    def test_yield_matches_the_feed_and_dmo(self):
+        sched = self.sched(self.SETTLE)
+        dirty = self.CLEAN + accrued(self.CPN, sched, self.SETTLE, self.EX)
+        y = yield_from_price(self.CPN, sched, self.SETTLE, dirty, self.EX)
+        assert y * 100 == pytest.approx(4.941, abs=0.01)
+
+    def test_stays_ex_until_the_coupon_it_detaches_is_paid(self):
+        in_window = dt.date(2026, 10, 21)  # ex 13/10 <= settle < coupon 22/10
+        sched = self.sched(in_window)
+        assert accrued(self.CPN, sched, in_window, self.EX) == 0.0
+        assert cashflows(self.CPN, sched, in_window, self.EX)[0] == (
+            dt.date(2027, 4, 22),
+            2.0,
+        )
+        after = dt.date(2026, 10, 23)  # window closed, one day of accrual
+        sched = self.sched(after)
+        assert accrued(self.CPN, sched, after, self.EX) == pytest.approx(2 / 182)

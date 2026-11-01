@@ -11,9 +11,12 @@ actual/365.25) reproduces the giltsyield.com "Gross yield" column; the site's
 caller (the price feed's timestamp implies T+1 settlement). Bond.schedule()
 anchors a new issue (issued after the last scheduled coupon) at its first
 issue date, which stands in for the pre-issue coupon dates. A gilt trades
-ex-dividend from the D1A ex_dividend_date: settling on or after it drops the
-next coupon and makes accrued interest zero, but the redemption amount is
-still received — at its own date when the dropped coupon is the final one.
+ex-dividend between the D1A ex_dividend_date and the coupon that ex-date
+detaches: settling inside that window drops that coupon and makes accrued
+interest zero, but the redemption amount is still received — at its own date
+when the dropped coupon is the final one. Once that coupon is paid the gilt
+trades cum again, even though the stored ex-date — point-in-time as of the
+inventory — sits in the past.
 
 Conventional gilts only — index-linked uplift is not modelled.
 """
@@ -71,15 +74,28 @@ def coupon_schedule(dividend_dates, redemption_date, since):
     return sorted(dates)
 
 
+def _trades_ex(schedule, settlement, ex_dividend_date):
+    """Whether the gilt trades ex-dividend at settlement.
+
+    True from the ex-date up to (not including) the coupon that ex-date
+    detaches: after that payment the gilt trades cum again, so a settlement
+    past it ignores an ex-date already in the past.
+    """
+    if ex_dividend_date is None or settlement < ex_dividend_date:
+        return False
+    coupon = next((d for d in schedule if d > ex_dividend_date), None)
+    return coupon is not None and settlement < coupon
+
+
 def cashflows(coupon_pct, schedule, settlement, ex_dividend_date=None):
     """[(date, amount)] the holder receives per £100 nominal.
 
     Coupons dated after settlement, with the redemption amount merged into
-    the final one; the next coupon is dropped while the gilt trades
-    ex-dividend (settlement on or after ex_dividend_date).
+    the final one; the coupon the ex-date detaches is dropped while the gilt
+    trades ex-dividend (settlement between ex_dividend_date and that coupon).
     """
     flows = [(d, coupon_pct / 2) for d in schedule if d > settlement]
-    if ex_dividend_date is not None and settlement >= ex_dividend_date and flows:
+    if _trades_ex(schedule, settlement, ex_dividend_date) and flows:
         flows[0] = (flows[0][0], flows[0][1] - coupon_pct / 2)
     if schedule and settlement < schedule[-1]:
         if flows and flows[-1][0] == schedule[-1]:
@@ -91,7 +107,7 @@ def cashflows(coupon_pct, schedule, settlement, ex_dividend_date=None):
 
 def accrued(coupon_pct, schedule, settlement, ex_dividend_date=None):
     """Accrued interest per £100 nominal (ICMA actual/actual, 0 when ex-dividend)."""
-    if ex_dividend_date is not None and settlement >= ex_dividend_date:
+    if _trades_ex(schedule, settlement, ex_dividend_date):
         return 0.0
     upcoming = [d for d in schedule if d > settlement]
     prev = [d for d in schedule if d <= settlement]
@@ -115,15 +131,7 @@ def _anchor(schedule, settlement, ex_dividend_date):
         return 0.0, 0
     period = (upcoming[0] - prev[-1]).days if prev else FIRST_PERIOD
     t0 = (upcoming[0] - settlement).days / period
-    steps0 = (
-        1
-        if (
-            ex_dividend_date is not None
-            and settlement >= ex_dividend_date
-            and len(upcoming) > 1
-        )
-        else 0
-    )
+    steps0 = 1 if _trades_ex(schedule, settlement, ex_dividend_date) and len(upcoming) > 1 else 0
     return t0, steps0
 
 
