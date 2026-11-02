@@ -6,9 +6,9 @@ import pandas as pd
 import pytest
 from conftest import make_bond
 
-from bond_management.dates import as_naive, next_business_day
-from bond_management.pricing import YEAR, accrued, coupon_schedule, price
-from bond_management.zspread import (
+from bond_management.core.dates import as_naive, next_business_day
+from bond_management.core.pricing import YEAR, accrued, coupon_schedule, price
+from bond_management.core.zspread import (
     DEFAULT_TENORS,
     MIN_LIFE_DAYS,
     WEIGHT_SIGMA,

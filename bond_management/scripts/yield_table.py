@@ -3,8 +3,8 @@ import datetime as dt
 import pandas as pd
 
 from bond_management import load_data
-from bond_management.dates import as_naive, next_business_day
-from bond_management.pricing import accrued, yield_from_price
+from bond_management.core.dates import as_naive, next_business_day
+from bond_management.core.pricing import accrued, yield_from_price
 
 
 def main():

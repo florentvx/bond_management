@@ -7,6 +7,7 @@ before that fetch() falls back to the latest date that has data.
 The CLI is the repo-root `dmo.py` executable (see its docstring for usage).
 """
 
+import argparse
 import datetime as dt
 import json
 import re
@@ -17,8 +18,12 @@ from urllib.parse import quote
 import xlrd
 from curl_cffi import requests as cr
 
-from .bond import Bond
-from .dates import excel_date, parse_utc_datetime
+if __package__:
+    from .bond import Bond
+    from .dates import excel_date, parse_date, parse_utc_datetime
+else:
+    from bond_management.core.bond import Bond
+    from bond_management.core.dates import excel_date, parse_date, parse_utc_datetime
 
 REPORT_CODE = "D1A"
 PAGE_URL = "https://www.dmo.gov.uk/data/pdfdatareport"
@@ -247,3 +252,25 @@ def read(path):
             section = name
     print(f"{Path(path).name}: {len(bonds)} gilts in issue on {cob_date:%d/%m/%Y}")
     return bonds
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Download the DMO gilts in issue (D1A) Excel export"
+    )
+    parser.add_argument(
+        "--date",
+        type=parse_date,
+        default=None,
+        help="COB date, dd/mm/yyyy (default: today)",
+    )
+    parser.add_argument(
+        "--out", default=str(OUT_DIR), help="output directory (default: screens)"
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="re-download even when a cached file exists",
+    )
+    args = parser.parse_args()
+    fetch(args.date, args.out, force=args.force)

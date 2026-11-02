@@ -6,7 +6,7 @@ from bond_management import __main__ as cli
 
 class TestDispatch:
     def test_table_runs_yield_table(self, monkeypatch):
-        import yield_table
+        from bond_management.scripts import yield_table
 
         called = []
         monkeypatch.setattr(yield_table, "main", lambda: called.append("table"))
@@ -14,7 +14,7 @@ class TestDispatch:
         assert called == ["table"]
 
     def test_graph_runs_generate_graph(self, monkeypatch):
-        import generate_graph
+        from bond_management.scripts import generate_graph
 
         called = []
         monkeypatch.setattr(generate_graph, "main", lambda: called.append("graph"))
@@ -22,7 +22,7 @@ class TestDispatch:
         assert called == ["graph"]
 
     def test_zhistory_runs_zspread_history(self, monkeypatch):
-        import zspread_history
+        from bond_management.scripts import zspread_history
 
         called = []
         monkeypatch.setattr(zspread_history, "main", lambda: called.append("zhistory"))

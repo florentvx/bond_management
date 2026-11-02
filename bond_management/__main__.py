@@ -4,17 +4,16 @@
     python -m bond_management table    recalculated yield table (copied to clipboard)
     python -m bond_management graph    par yield curve chart (screens/*.png)
     python -m bond_management zhistory pillar z-spreads per cached close (screens/*.csv)
+    python -m bond_management history  fetch daily price/yield history for live conventional gilts
 
-The table/graph/zhistory subcommands import the root-level reports, so they need the
-repo root as the working directory (it lands on `sys.path` via `-m`); heads
-works anywhere. Each report still runs standalone (`python yield_table.py`,
-`python generate_graph.py`).
+The table/graph/zhistory/history subcommands import the scripts in `bond_management.scripts`.
 """
 
 import argparse
+import sys
 
 from . import load_data
-from .bond import Bond
+from .core.bond import Bond
 
 
 def heads():
@@ -34,19 +33,45 @@ def main(argv=None):
     sub.add_parser(
         "zhistory", help="pillar z-spreads per cached close (screens/zspread_history.csv)"
     )
+    parser_hist = sub.add_parser(
+        "history",
+        help="fetch historical prices for live conventional gilts (screens/history/*.csv)",
+    )
+    parser_hist.add_argument(
+        "--start-date", "-s", default="2026-01-01", help="Start date e.g. 1Jan2026 or 2026-01-01"
+    )
+    parser_hist.add_argument("--end-date", "-e", default=None, help="End date e.g. 2026-11-01")
+    parser_hist.add_argument(
+        "--ticker",
+        "-t",
+        required=True,
+        help="Gilt ticker symbol (e.g. T27A) or 'all' for all live conventional gilts",
+    )
+    parser_hist.add_argument(
+        "--test", action="store_true", help="Run on 1 example gilt before full run"
+    )
+    parser_hist.add_argument(
+        "--out-dir", "-o", default="screens/history", help="Output directory"
+    )
+
     args = parser.parse_args(argv)
     if args.script == "table":
-        import yield_table
+        from .scripts import yield_table
 
         yield_table.main()
     elif args.script == "graph":
-        import generate_graph
+        from .scripts import generate_graph
 
         generate_graph.main()
     elif args.script == "zhistory":
-        import zspread_history
+        from .scripts import zspread_history
 
         zspread_history.main()
+    elif args.script == "history":
+        from .scripts import fetch_history
+
+        sub_args = sys.argv[2:] if argv is None else argv[1:]
+        fetch_history.main(sub_args)
     else:
         heads()
 

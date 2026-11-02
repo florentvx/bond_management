@@ -1,6 +1,6 @@
 """Historical pillar z-spreads, one row per cached close in screens/.
 
-    python zspread_history.py
+    python bond_management/scripts/zspread_history.py
 
 Replays the z-spread calibration (zspread.fit) over every gilts_*.csv cached
 in screens and tabulates the eight benchmark-node z-spreads per feed date, in
@@ -8,7 +8,7 @@ bp. Every snapshot is paired with the newest cached D1A workbook: coupon
 schedules and redemption dates are fixed, so one inventory serves them all —
 a gilt missing from it (matured, or issued after the workbook's COB) is left
 out with the same note fit gives the live run. Nothing hits the network; a
-fresh clone needs screens/ populated first (python dmo.py, then a few days of
+fresh clone needs screens/ populated first (python bond_management/core/dmo.py, then a few days of
 python -m bond_management runs).
 
 Writes screens/zspread_history.csv next to the price caches.
@@ -18,9 +18,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from bond_management import dmo
-from bond_management.dates import as_naive, next_business_day
-from bond_management.zspread import DEFAULT_TENORS, fit
+from bond_management.core import dmo
+from bond_management.core.dates import as_naive, next_business_day
+from bond_management.core.zspread import DEFAULT_TENORS, fit
 
 OUT_DIR = Path("screens")
 

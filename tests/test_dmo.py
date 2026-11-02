@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import pytest
 from conftest import FakeResponse
 
-from bond_management import dmo
-from bond_management.dates import excel_date
+from bond_management.core import dmo
+from bond_management.core.dates import excel_date
 
 
 class FakeSheet:
@@ -381,12 +381,13 @@ class TestFetch:
         assert path.read_bytes() == b"fresh-bytes"
 
 
-class TestRootExecutable:
+class TestScriptExecutable:
     def test_help_runs(self):
-        """`python dmo.py --help` (repo-root executable) imports the package correctly."""
+        """`python bond_management/core/dmo.py --help` imports the package correctly."""
         root = Path(__file__).resolve().parent.parent
+        script_path = root / "bond_management" / "core" / "dmo.py"
         done = subprocess.run(
-            [sys.executable, "dmo.py", "--help"],
+            [sys.executable, str(script_path), "--help"],
             cwd=root,
             capture_output=True,
             text=True,

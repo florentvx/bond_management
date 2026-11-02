@@ -3,9 +3,9 @@ import datetime as dt
 import pytest
 from conftest import make_bond
 
-import bond_management.bond as bond_module
-from bond_management.bond import Bond
-from bond_management.pricing import coupon_schedule
+import bond_management.core.bond as bond_module
+from bond_management.core.bond import Bond
+from bond_management.core.pricing import coupon_schedule
 
 
 class TestBond:

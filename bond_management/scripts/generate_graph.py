@@ -1,6 +1,6 @@
 """Synthetic par yield curve from the calibrated z-spread, over the real gilt market.
 
-    python generate_graph.py
+    python bond_management/scripts/generate_graph.py
 
 Loads the latest feed and DMO inventory (load_data), calibrates the z-spread
 curve on it (zspread.fit, the eight DEFAULT_TENORS pillars — residuals weighted
@@ -35,9 +35,14 @@ import numpy as np
 import pandas as pd
 
 from bond_management import load_data
-from bond_management.dates import as_naive, next_business_day
-from bond_management.pricing import accrued, yield_from_price
-from bond_management.zspread import DEFAULT_TENORS, MIN_LIFE_DAYS, curve_price, fit
+from bond_management.core.dates import as_naive, next_business_day
+from bond_management.core.pricing import accrued, yield_from_price
+from bond_management.core.zspread import (
+    DEFAULT_TENORS,
+    MIN_LIFE_DAYS,
+    curve_price,
+    fit,
+)
 
 YEAR = 365.25
 SETTLE_LAG = 91  # days from settlement to the synthetic gilt's first coupon

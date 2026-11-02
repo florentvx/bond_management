@@ -4,7 +4,7 @@ import datetime as dt
 import pandas as pd
 import pytest
 
-from bond_management.dates import (
+from bond_management.core.dates import (
     CLOSE,
     as_naive,
     bank_holidays,

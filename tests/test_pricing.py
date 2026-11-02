@@ -5,8 +5,8 @@ import pandas as pd
 import pytest
 from conftest import make_bond
 
-from bond_management.dates import as_naive, next_business_day
-from bond_management.pricing import (
+from bond_management.core.dates import as_naive, next_business_day
+from bond_management.core.pricing import (
     accrued,
     cashflows,
     convexity,

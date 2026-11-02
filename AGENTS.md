@@ -39,17 +39,6 @@ Standard installable package layout (repo root ≠ package):
 - `pyproject.toml` — package metadata (`bond-management`), runtime dependencies,
   setuptools package discovery, pytest `testpaths`. Install with `pip install -e .`
   (already done in `.venv`; a fresh clone needs it once).
-- `dmo.py` — repo-root executable: `python dmo.py [--date dd/mm/yyyy] [--out DIR] [--force]`
-  fetches the DMO inventory.
-- `yield_table.py`, `generate_graph.py`, `zspread_history.py` — repo-root reports
-  (plain imports of the package): `python yield_table.py` recalculates every feed yield
-  against the engine; `python generate_graph.py` calibrates the z-spread on the latest
-  data and writes `screens/par_yield_curve_YYYYMMDD.png` (synthetic par yield curve over
-  0.25y–50.25y — wider than the pillars — with every conventional gilt's YTM on top,
-  coloured by the fit's residual z-spread), then shows the window;
-  `python zspread_history.py` replays the calibration over every cached
-  `gilts_*.csv` close in `screens/` and writes `screens/zspread_history.csv`
-  (one row per close: the eight pillar z-spreads in bp, plus feed/settle dates).
 - `bond_management/` — the importable package:
   - `__init__.py` — entry point and data-loading orchestration. Public API
     (`__all__`): `load_data(out_dir="screens") -> (prices_df, list[Bond])`,
@@ -58,28 +47,19 @@ Standard installable package layout (repo root ≠ package):
     both sources, `python -m bond_management table` runs the yield table,
     `python -m bond_management graph` the par-yield chart and
     `python -m bond_management zhistory` the pillar z-spread history (argparse
-    subcommands dispatching to the root reports; the subcommands need the repo root
-    as cwd, heads works anywhere; each report still runs standalone).
-  - `dmo.py` — UK DMO "Gilts in Issue" (report **D1A**) downloader + `.xls` parser.
-    `read()` returns `list[Bond]`; a library (`fetch`, `download_xls`,
-    `read`, `find_newest`, ...) — the CLI is the root `dmo.py` executable.
-  - `bond.py` — the `Bond` class: every D1A field per gilt (isin, market,
-    indexation_lag, section, dates, amounts, base RPI, ...). `Bond.frame(bonds)`
-    builds the inventory DataFrame; `Bond.schedule(since)` derives coupon dates.
-  - `pricing.py` — gilt cashflows and analytics (conventional gilts): coupon
-    schedule from the D1A `dividend_dates` pattern, cashflows with ex-dividend
-    handling, ICMA accrued, `price` / `yield_from_price` (bisection),
-    `modified_duration`, `convexity`. Two yield conventions, see Conventions.
-  - `zspread.py` — z-spread curve over `DEFAULT_TENORS` (0.5/1/3/5/10/20/30/50y,
-    linear interpolation, flat outside): `curve_price` discounts cashflows at
-    the curve, `residual_zspread` bisects the flat shift that reprices a gilt,
-    `price_weight` (normal law around par, `WEIGHT_SIGMA` = 20) sets each gilt's
-    say in the fit, `calibrate` fits the nodes by Gauss-Newton minimising
-    Σ (weight · residual)², and `fit` runs the whole thing on the feed +
-    inventory, dropping gilts maturing within `MIN_LIFE_DAYS` (30) of settlement
-    (see Conventions).
-  - `dates.py` — all date logic: `CLOSE`, `easter`, `bank_holidays`, `feed_date`,
-    `next_business_day`, `as_naive`, `parse_date`, `parse_utc_datetime`, `excel_date`.
+    subcommands dispatching to `bond_management.scripts`; heads works anywhere).
+  - `core/` — domain models, pricing analytics, curve calibration, date logic, and utilities:
+    - `bond.py` — `Bond` class: every D1A field per gilt (isin, market, indexation_lag, section, dates, amounts, base RPI, ...).
+    - `pricing.py` — gilt cashflows and analytics (conventional gilts): coupon schedule, ICMA accrued, price/yield, duration, convexity.
+    - `zspread.py` — z-spread curve over benchmark tenors, Gauss-Newton par-weighted calibration.
+    - `dates.py` — date utilities, bank holidays, close times, business day arithmetic.
+    - `dmo.py` — UK DMO "Gilts in Issue" (report **D1A**) downloader + `.xls` parser (`python bond_management/core/dmo.py`).
+    - `fetch_gilt_history.py`, `zspread_history_alt.py`, `plot_yield_curve_evolution.py`.
+  - `scripts/` — executable report scripts run by `__main__.py`:
+    - `yield_table.py` — recalculates feed yields against pricing engine (`python bond_management/scripts/yield_table.py`).
+    - `generate_graph.py` — calibrates z-spread curve and writes `screens/par_yield_curve_YYYYMMDD.png` (`python bond_management/scripts/generate_graph.py`).
+    - `zspread_history.py` — replays calibration over cached closes (`python bond_management/scripts/zspread_history.py`).
+    - `fetch_history.py` — fetches historical prices for live conventional gilts.
 - `screens/` — **gitignored** local data cache: `gilts_YYYYMMDD.csv` (price snapshots),
   `gilts_in_issue_YYYYMMDD.xls` (inventory), plus generated charts
   (`par_yield_curve_YYYYMMDD.png`). A fresh clone starts empty and downloads on
@@ -121,18 +101,18 @@ pip install -e .
 python -m bond_management
 
 # DMO inventory only (today's COB, or latest published)
-python dmo.py
-python dmo.py --date 02/10/2026 --out screens
-python dmo.py --force   # ignore the cache, hit DMO again
+python bond_management/core/dmo.py
+python bond_management/core/dmo.py --date 02/10/2026 --out screens
+python bond_management/core/dmo.py --force   # ignore the cache, hit DMO again
 
 # recalc the yield table for every feed gilt vs the engine (needs repo-root cwd)
-python -m bond_management table   # or: python yield_table.py
+python -m bond_management table   # or: python bond_management/scripts/yield_table.py
 
 # calibrate the z-spread on the latest data and draw the par-yield vs market chart
-python -m bond_management graph   # or: python generate_graph.py
+python -m bond_management graph   # or: python bond_management/scripts/generate_graph.py
 
 # pillar z-spreads for every cached close in screens/ (offline)
-python -m bond_management zhistory   # or: python zspread_history.py
+python -m bond_management zhistory   # or: python bond_management/scripts/zspread_history.py
 
 # tests (offline)
 python -m pytest -q
@@ -209,11 +189,9 @@ Debug via VS Code "Python Debugger: Current File" (`.vscode/launch.json`).
   par line (par yield is coupon-weighted, their YTM is redemption-weighted); grid
   points outside 0.5–50y are drawn dashed over the flat part.
 - Imports: the package's modules use plain relative imports (`from . import dmo`) and
-  are library code — the one exception is `bond_management/__main__.py`, a thin
-  dispatcher (`python -m bond_management`) that reaches the root reports via
-  `import yield_table` / `import generate_graph` / `import zspread_history` (cwd on
-  `sys.path`). The other
-  repo-root executables import the package absolutely (`from bond_management import ...`),
+  are library code — `bond_management/__main__.py` dispatches to scripts in
+  `bond_management.scripts` via relative imports (`from .scripts import yield_table`).
+  The scripts import the package absolutely (`from bond_management import ...`),
   resolved by the editable install or by the root being on `sys.path` when run from
   there, so a missing third-party dependency surfaces with its own ImportError instead
   of a masked one.
@@ -222,7 +200,7 @@ Debug via VS Code "Python Debugger: Current File" (`.vscode/launch.json`).
 
 Runtime: `pandas`, `requests` (price feed only), `beautifulsoup4` (price feed only),
 `curl_cffi` (DMO only — required for the package to import at all), `xlrd` (DMO only,
-legacy `.xls`), `numpy` (z-spread calibration only), `matplotlib` (root `generate_graph.py`
+legacy `.xls`), `numpy` (z-spread calibration only), `matplotlib` (`generate_graph.py`
 only). Optional extras: `test` = `pytest`,
 `lint` = `ruff`.
 
@@ -232,8 +210,7 @@ Installed in `.venv` but not declared — likely intended for the portfolio laye
 ## Gotchas
 
 - `screens/` is gitignored — only `.gitignore`, `AGENTS.md`, `LICENSE`, `pyproject.toml`,
-  `bond_management/`, `tests/` and the root scripts (`dmo.py`, `yield_table.py`,
-  `generate_graph.py`, `zspread_history.py`) are tracked.
+  `bond_management/`, `tests/` are tracked.
 - Running `load_data()` hits the network and writes to `screens/`.
 - Date-stamped filenames are the cache keys; freshness rules are filename- and
   clock-based, not content-based.

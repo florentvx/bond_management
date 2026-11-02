@@ -6,10 +6,10 @@ import pandas as pd
 import pytest
 from conftest import make_bond
 
-import generate_graph
-from bond_management.dates import next_business_day
-from bond_management.pricing import accrued
-from bond_management.zspread import DEFAULT_TENORS, curve_price
+from bond_management.core.dates import next_business_day
+from bond_management.core.pricing import accrued
+from bond_management.core.zspread import DEFAULT_TENORS, curve_price
+from bond_management.scripts import generate_graph
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SETTLE = next_business_day(dt.date(2026, 10, 9))  # the fixtures' Friday close, T+1

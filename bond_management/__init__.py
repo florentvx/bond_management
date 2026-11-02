@@ -18,9 +18,9 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-from . import dmo
-from .bond import Bond
-from .dates import CLOSE, as_naive, feed_date
+from .core import dmo
+from .core.bond import Bond
+from .core.dates import CLOSE, as_naive, feed_date
 
 __all__ = [
     "Bond",

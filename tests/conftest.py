@@ -5,7 +5,7 @@ from pathlib import Path
 # tests run even without `pip install -e .`; an installed copy would work too.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bond_management.bond import Bond
+from bond_management.core.bond import Bond
 
 
 class FakeResponse:

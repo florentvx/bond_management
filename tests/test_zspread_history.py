@@ -5,10 +5,10 @@ import pandas as pd
 import pytest
 from conftest import make_bond
 
-import zspread_history
-from bond_management import dmo
-from bond_management.zspread import DEFAULT_TENORS, fit
-from zspread_history import history
+from bond_management.core import dmo
+from bond_management.core.zspread import DEFAULT_TENORS, fit
+from bond_management.scripts import zspread_history
+from bond_management.scripts.zspread_history import history
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
