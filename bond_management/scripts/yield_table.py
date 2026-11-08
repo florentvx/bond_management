@@ -17,7 +17,10 @@ def main():
 
     rows = []
     for _, r in prices.iterrows():
-        b = inv[r["isin"]]
+        b = inv.get(r["isin"])
+        if b is None:
+            print(f"skipping {r['isin']} ({r['name']}): missing from DMO inventory")
+            continue
         sched = b.schedule(settle)
         ex = dt.date.fromisoformat(str(b.ex_dividend_date)) if b.ex_dividend_date else None
         dirty = r["clean_price"] + accrued(r["coupon_pct"], sched, settle, ex)

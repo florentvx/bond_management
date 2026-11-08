@@ -374,6 +374,29 @@ class TestLoadData:
         assert reads == ["gilts_in_issue_20261008.xls", "gilts_in_issue_20261009.xls"]
         assert [b.isin for b in bonds] == ["GB00B3KJDS62"]
 
+    def test_missing_priced_isin_triggers_fetch_same_path(self, tmp_path, monkeypatch):
+        fetched = []
+        path = self.patch(monkeypatch, tmp_path, fetched)
+
+        def fake_fetch(cob_date=None, out_dir=None, force=False):
+            fetched.append(force)
+            return path
+
+        monkeypatch.setattr(bm.dmo, "fetch", fake_fetch)
+        read_count = [0]
+
+        def fake_read(p):
+            read_count[0] += 1
+            if read_count[0] == 1:
+                return [make_bond("GBOTHER0000")]
+            return [make_bond("GB00B3KJDS62")]
+
+        monkeypatch.setattr(bm.dmo, "read", fake_read)
+        _prices, bonds = bm.load_data(tmp_path)
+        assert fetched == [True]
+        assert read_count[0] == 2
+        assert [b.isin for b in bonds] == ["GB00B3KJDS62"]
+
     def test_warns_when_feed_is_missing_gilts(self, tmp_path, monkeypatch, capsys):
         fetched = []
         bonds = [

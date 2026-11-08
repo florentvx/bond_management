@@ -320,15 +320,22 @@ def load_data(out_dir=OUT_DIR, force=False):
             except dmo.FETCH_ERRORS as e:
                 print(f"could not refresh the DMO inventory: {e}; using {path.name}")
             else:
-                if fresh != path:
-                    path, bonds = fresh, dmo.read(fresh)
-                    missing = sorted(priced - {b.isin for b in bonds})
+                path, bonds = fresh, dmo.read(fresh)
+                missing = sorted(priced - {b.isin for b in bonds})
                 if missing:
                     print(f"still missing from the DMO inventory: {', '.join(missing)}")
+        as_of = (
+            pd.to_datetime(prices["as_of"], errors="coerce").max()
+            if "as_of" in prices.columns
+            else None
+        )
+        on = as_naive(as_of).date() if not pd.isna(as_of) else feed_date()
         gone = sorted(
             b.isin
             for b in bonds
-            if b.market == "conventional" and b.isin not in priced
+            if b.market == "conventional"
+            and b.isin not in priced
+            and (b.redemption_date is None or b.redemption_date > on)
         )
         if gone:
             print(f"feed may be missing {len(gone)} gilts: {', '.join(gone)}")

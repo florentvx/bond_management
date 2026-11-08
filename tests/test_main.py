@@ -40,3 +40,27 @@ class TestDispatch:
         with pytest.raises(SystemExit) as exc:
             cli.main(["nope"])
         assert exc.value.code == 2
+
+    def test_yield_table_skips_missing_bonds(self, monkeypatch, capsys):
+        from bond_management.scripts import yield_table
+
+        prices = pd.DataFrame(
+            [
+                {
+                    "name": "Missing Gilt",
+                    "tidm": "TMISS",
+                    "isin": "GBMISS000001",
+                    "coupon_pct": 4.0,
+                    "matures": "2030-01-01",
+                    "clean_price": 100.0,
+                    "dmo_yield_pct": 4.0,
+                    "as_of": "2026-10-09 17:00",
+                }
+            ]
+        )
+        monkeypatch.setattr(yield_table, "load_data", lambda: (prices, []))
+        monkeypatch.setattr(pd.DataFrame, "to_clipboard", lambda self, **kwargs: None)
+
+        yield_table.main()
+        out = capsys.readouterr().out
+        assert "skipping GBMISS000001 (Missing Gilt): missing from DMO inventory" in out
