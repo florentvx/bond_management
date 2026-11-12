@@ -4,9 +4,14 @@
     python -m bond_management table    recalculated yield table (copied to clipboard)
     python -m bond_management graph    par yield curve chart (screens/*.png)
     python -m bond_management zhistory pillar z-spreads per cached close (screens/*.csv)
+    python -m bond_management alt-history  pillar z-spreads replayed over screens/history
+                                           -> screens/zspread_history_alt.csv
     python -m bond_management history  fetch daily price/yield history for live conventional gilts
+    python -m bond_management ibkr     IBKR Flex statement -> screens/ibkr_trades.csv
+                                       plus the portfolio as zero-coupon bonds (clipboard)
 
-The table/graph/zhistory/history subcommands import the scripts in `bond_management.scripts`.
+The table/graph/zhistory/history/ibkr subcommands import the scripts in `bond_management.scripts`;
+alt-history imports `bond_management.core.zspread_history_alt`.
 """
 
 import argparse
@@ -33,6 +38,10 @@ def main(argv=None):
     sub.add_parser(
         "zhistory", help="pillar z-spreads per cached close (screens/zspread_history.csv)"
     )
+    sub.add_parser(
+        "alt-history",
+        help="pillar z-spreads replayed over screens/history (screens/zspread_history_alt.csv)",
+    )
     parser_hist = sub.add_parser(
         "history",
         help="fetch historical prices for live conventional gilts (screens/history/*.csv)",
@@ -53,6 +62,10 @@ def main(argv=None):
     parser_hist.add_argument(
         "--out-dir", "-o", default="screens/history", help="Output directory"
     )
+    sub.add_parser(
+        "ibkr",
+        help="IBKR Flex statement: heads, reconcile screens/ibkr_trades.csv, zero-coupon table",
+    )
 
     args = parser.parse_args(argv)
     if args.script == "table":
@@ -67,11 +80,19 @@ def main(argv=None):
         from .scripts import zspread_history
 
         zspread_history.main()
+    elif args.script == "alt-history":
+        from .core import zspread_history_alt
+
+        zspread_history_alt.main()
     elif args.script == "history":
         from .scripts import fetch_history
 
         sub_args = sys.argv[2:] if argv is None else argv[1:]
         fetch_history.main(sub_args)
+    elif args.script == "ibkr":
+        from .scripts import ibkr_api
+
+        ibkr_api.main()
     else:
         heads()
 

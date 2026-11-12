@@ -29,6 +29,22 @@ class TestDispatch:
         cli.main(["zhistory"])
         assert called == ["zhistory"]
 
+    def test_alt_history_runs_zspread_history_alt(self, monkeypatch):
+        from bond_management.core import zspread_history_alt
+
+        called = []
+        monkeypatch.setattr(zspread_history_alt, "main", lambda: called.append("alt-history"))
+        cli.main(["alt-history"])
+        assert called == ["alt-history"]
+
+    def test_ibkr_runs_ibkr_api(self, monkeypatch):
+        from bond_management.scripts import ibkr_api
+
+        called = []
+        monkeypatch.setattr(ibkr_api, "main", lambda: called.append("ibkr"))
+        cli.main(["ibkr"])
+        assert called == ["ibkr"]
+
     def test_no_subcommand_prints_the_heads(self, monkeypatch, capsys):
         monkeypatch.setattr(
             cli, "load_data", lambda: (pd.DataFrame({"tidm": ["T26A"]}), [])

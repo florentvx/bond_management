@@ -46,8 +46,13 @@ Standard installable package layout (repo root ≠ package):
   - `__main__.py` — CLI entry point: `python -m bond_management` prints the heads of
     both sources, `python -m bond_management table` runs the yield table,
     `python -m bond_management graph` the par-yield chart and
-    `python -m bond_management zhistory` the pillar z-spread history (argparse
-    subcommands dispatching to `bond_management.scripts`; heads works anywhere).
+    `python -m bond_management zhistory` the pillar z-spread history,
+    `python -m bond_management alt-history` the same replayed over `screens/history/*.csv`
+    (`screens/zspread_history_alt.csv`),
+    `python -m bond_management history` the historical price fetch,
+    `python -m bond_management ibkr` the IBKR trade-history screen (argparse
+    subcommands dispatching to `bond_management.scripts` — except `alt-history`,
+    which dispatches to `bond_management.core.zspread_history_alt`; heads works anywhere).
   - `core/` — domain models, pricing analytics, curve calibration, date logic, and utilities:
     - `bond.py` — `Bond` class: every D1A field per gilt (isin, market, indexation_lag, section, dates, amounts, base RPI, ...).
     - `pricing.py` — gilt cashflows and analytics (conventional gilts): coupon schedule, ICMA accrued, price/yield, duration, convexity.
@@ -60,6 +65,11 @@ Standard installable package layout (repo root ≠ package):
     - `generate_graph.py` — calibrates z-spread curve and writes `screens/par_yield_curve_YYYYMMDD.png` (`python bond_management/scripts/generate_graph.py`).
     - `zspread_history.py` — replays calibration over cached closes (`python bond_management/scripts/zspread_history.py`).
     - `fetch_history.py` — fetches historical prices for live conventional gilts.
+    - `ibkr_api.py` — IBKR Flex statement (credentials from env or the gitignored
+      `secrets/ibkr.env`), reconciles trades into `screens/ibkr_trades.csv` and
+      decomposes the portfolio into zero-coupon flows — every coupon plus the
+      redemption, one row per payment date (amount due, curve pv, market pv,
+      merged z-spread), printed and copied to the clipboard, never written to screens/.
 - `screens/` — **gitignored** local data cache: `gilts_YYYYMMDD.csv` (price snapshots),
   `gilts_in_issue_YYYYMMDD.xls` (inventory), plus generated charts
   (`par_yield_curve_YYYYMMDD.png`). A fresh clone starts empty and downloads on
@@ -113,6 +123,17 @@ python -m bond_management graph   # or: python bond_management/scripts/generate_
 
 # pillar z-spreads for every cached close in screens/ (offline)
 python -m bond_management zhistory   # or: python bond_management/scripts/zspread_history.py
+
+# refresh screens/history/*.csv from giltsyield.com (merges with existing rows)
+python -m bond_management history --ticker all --start-date 1Jan2026
+
+# pillar z-spreads replayed over screens/history/*.csv -> screens/zspread_history_alt.csv
+python -m bond_management alt-history   # or: python bond_management/core/zspread_history_alt.py
+
+# IBKR Flex statement: print heads, append/refresh screens/ibkr_trades.csv,
+# then the portfolio as zero coupons (payment date, amount, curve pv, pv,
+# z-spread; terminal + clipboard only)
+python -m bond_management ibkr
 
 # tests (offline)
 python -m pytest -q

@@ -2,6 +2,12 @@
 
 Replays z-spread calibration (zspread.fit) across all daily closes from 1Jan2026 to today.
 Saves results to screens/zspread_history_alt.csv without overwriting screens/zspread_history.csv.
+
+Usage as CLI via package:
+    python -m bond_management alt-history
+
+Usage as CLI via script:
+    python bond_management/core/zspread_history_alt.py
 """
 
 import datetime as dt
